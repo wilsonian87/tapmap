@@ -60,6 +60,32 @@ export interface ScanSummary {
   duration_seconds: number | null;
 }
 
+export interface ScanElement {
+  page_url: string;
+  page_title: string | null;
+  element_type: string;
+  action_type: string | null;
+  element_text: string | null;
+  css_selector: string | null;
+  section_context: string | null;
+  container_context: string;
+  is_above_fold: number;
+  target_url: string | null;
+  is_external: number;
+  pharma_context: string | null;
+  notes: string | null;
+}
+
+export interface ScanDetail {
+  scan: Record<string, unknown>;
+  elements: ScanElement[];
+  summary: {
+    total_elements: number;
+    by_type: Record<string, number>;
+    pharma_flagged: number;
+  };
+}
+
 export function createScan(data: ScanRequest) {
   return request<{ scan_id: string; status: string; domain: string }>(
     "/scans",
@@ -72,7 +98,10 @@ export function listScans() {
 }
 
 export function getScan(scanId: string) {
-  return request<{ scan: Record<string, unknown>; elements: Record<string, unknown>[] }>(
-    `/scans/${scanId}`
-  );
+  return request<ScanDetail>(`/scans/${scanId}`);
+}
+
+// Exports
+export function getExportUrl(scanId: string, format: "xlsx" | "csv") {
+  return `${BASE}/exports/${scanId}/${format}`;
 }

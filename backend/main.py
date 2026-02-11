@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from db.database import init_db
 from auth.routes import router as auth_router
 from api.scans import router as scans_router
+from api.exports import router as exports_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +46,7 @@ app.add_middleware(
 # API routes
 app.include_router(auth_router)
 app.include_router(scans_router)
+app.include_router(exports_router)
 
 
 # Serve frontend static files in production

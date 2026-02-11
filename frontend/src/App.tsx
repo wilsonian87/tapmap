@@ -2,12 +2,16 @@ import { useState, useEffect } from "react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { LoginForm } from "./components/LoginForm";
 import { ScanForm } from "./components/ScanForm";
+import { ScanDetail } from "./components/ScanDetail";
 import { getMe, logout, listScans } from "./lib/api";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: 1 } },
+});
 
 function Dashboard() {
   const [selectedScan, setSelectedScan] = useState<string | null>(null);
+
   const { data: user } = useQuery({
     queryKey: ["me"],
     queryFn: getMe,
@@ -17,7 +21,7 @@ function Dashboard() {
   const { data: scans, refetch: refetchScans } = useQuery({
     queryKey: ["scans"],
     queryFn: listScans,
-    refetchInterval: 5000, // Poll for scan status updates
+    refetchInterval: 5000,
   });
 
   const handleLogout = async () => {
@@ -26,31 +30,60 @@ function Dashboard() {
     window.location.reload();
   };
 
-  const statusColor = (status: string) => {
-    switch (status) {
-      case "completed": return "text-green-600";
-      case "running": return "text-amber-500";
-      case "failed": return "text-destructive";
-      case "pending": return "text-muted-foreground";
-      default: return "text-muted-foreground";
-    }
+  const statusBadge = (status: string) => {
+    const styles: Record<string, string> = {
+      completed: "bg-green-100 text-green-700",
+      running: "bg-amber-100 text-amber-700",
+      pending: "bg-gray-100 text-gray-600",
+      failed: "bg-red-100 text-red-700",
+      timeout: "bg-orange-100 text-orange-700",
+    };
+    return styles[status] || styles.pending;
   };
 
+  // If a scan is selected, show detail view
+  if (selectedScan) {
+    return (
+      <div className="mx-auto max-w-6xl p-6 sm:p-8">
+        <header className="mb-6 flex items-center justify-between">
+          <h1 className="text-xl font-bold tracking-tight">TapMap</h1>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-muted-foreground">{user?.username}</span>
+            <button
+              onClick={handleLogout}
+              className="rounded-lg border px-3 py-1.5 text-sm hover:bg-muted"
+            >
+              Sign out
+            </button>
+          </div>
+        </header>
+        <ScanDetail
+          scanId={selectedScan}
+          onBack={() => setSelectedScan(null)}
+        />
+      </div>
+    );
+  }
+
+  // Default: scan list view
   return (
-    <div className="mx-auto max-w-4xl p-8">
+    <div className="mx-auto max-w-4xl p-6 sm:p-8">
       <header className="mb-8 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">TapMap</h1>
           <p className="text-sm text-muted-foreground">
-            Signed in as {user?.username}
+            Pharma site interaction discovery
           </p>
         </div>
-        <button
-          onClick={handleLogout}
-          className="rounded-lg border px-4 py-2 text-sm hover:bg-muted"
-        >
-          Sign out
-        </button>
+        <div className="flex items-center gap-4">
+          <span className="text-sm text-muted-foreground">{user?.username}</span>
+          <button
+            onClick={handleLogout}
+            className="rounded-lg border px-3 py-1.5 text-sm hover:bg-muted"
+          >
+            Sign out
+          </button>
+        </div>
       </header>
 
       <div className="mb-8">
@@ -65,9 +98,11 @@ function Dashboard() {
       <div>
         <h2 className="mb-4 text-lg font-semibold">Scan History</h2>
         {!scans || scans.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No scans yet. Enter a URL above to get started.
-          </p>
+          <div className="rounded-xl border bg-card p-8 text-center">
+            <p className="text-muted-foreground">
+              No scans yet. Enter a pharma brand URL above to get started.
+            </p>
+          </div>
         ) : (
           <div className="rounded-xl border bg-card">
             <table className="w-full text-sm">
@@ -88,8 +123,12 @@ function Dashboard() {
                     onClick={() => setSelectedScan(scan.scan_id)}
                   >
                     <td className="px-4 py-3 font-medium">{scan.domain}</td>
-                    <td className={`px-4 py-3 ${statusColor(scan.scan_status)}`}>
-                      {scan.scan_status}
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${statusBadge(scan.scan_status)}`}
+                      >
+                        {scan.scan_status}
+                      </span>
                     </td>
                     <td className="px-4 py-3">{scan.pages_scanned}</td>
                     <td className="px-4 py-3">
