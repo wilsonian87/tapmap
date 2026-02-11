@@ -7,16 +7,18 @@ from playwright.async_api import async_playwright, Page, Browser
 
 from crawler.models import ScanConfig, PageResult, CrawlProgress
 from crawler.robots import check_robots_txt
+from crawler.extractor import extract_elements
+from crawler.consent import handle_consent, ConsentResult
 from config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class CrawlEngine:
-    """Phase 1 crawler: discovers pages within a domain.
+    """Crawl engine: discovers pages and extracts interactive elements.
 
     Respects robots.txt, rate limits, page caps, and depth limits.
-    Element extraction is deferred to Phase 2 (extractor.py).
+    Handles cookie/consent banners before extraction.
     """
 
     def __init__(self, config: ScanConfig):
@@ -27,12 +29,13 @@ class CrawlEngine:
         self.pages: list[PageResult] = []
         self.queue: asyncio.Queue[tuple[str, int]] = asyncio.Queue()
         self.progress = CrawlProgress(scan_id="", status="running")
-        self._robots_parser = None
+        self.consent_result: ConsentResult | None = None
+        self.total_elements: int = 0
 
     def _normalize_url(self, url: str) -> str:
         """Normalize URL: remove fragment, strip trailing slash."""
         url, _ = urldefrag(url)
-        if url.endswith("/") and len(urlparse(url).path) > 1:
+        if url.endswith("/"):
             url = url.rstrip("/")
         return url
 
@@ -79,7 +82,7 @@ class CrawlEngine:
         return links
 
     async def crawl(self, scan_id: str) -> list[PageResult]:
-        """Execute the crawl. Returns list of discovered pages."""
+        """Execute the crawl. Returns list of discovered pages with elements."""
         self.progress.scan_id = scan_id
         start_time = time.time()
 
@@ -116,8 +119,8 @@ class CrawlEngine:
 
         elapsed = time.time() - start_time
         logger.info(
-            "Crawl complete: %d pages in %.1fs",
-            len(self.pages), elapsed,
+            "Crawl complete: %d pages, %d elements in %.1fs",
+            len(self.pages), self.total_elements, elapsed,
         )
 
         if self.progress.status == "running":
@@ -128,6 +131,7 @@ class CrawlEngine:
     async def _crawl_loop(self, context, robots):
         """Process URLs from queue with rate limiting."""
         delay = 1.0 / self.config.rate_limit
+        consent_handled = False
 
         while not self.queue.empty():
             # Check page cap
@@ -150,27 +154,37 @@ class CrawlEngine:
             self.progress.current_url = normalized
 
             # Crawl the page
-            result = await self._visit_page(context, normalized, depth)
+            result = await self._visit_page(
+                context, normalized, depth,
+                handle_consent_banner=not consent_handled,
+            )
             self.pages.append(result)
+            self.total_elements += len(result.elements)
             self.progress.pages_scanned = len(self.pages)
             self.progress.total_pages_found = len(self.visited) + self.queue.qsize()
 
+            # Mark consent as handled after first page
+            if not consent_handled:
+                consent_handled = True
+
             logger.info(
-                "[%d/%d] %s (depth=%d) -> %s",
+                "[%d/%d] %s (depth=%d) -> %s (%d elements)",
                 len(self.pages),
                 self.config.max_pages,
                 normalized,
                 depth,
                 result.title or "(no title)",
+                len(result.elements),
             )
 
             # Rate limiting
             await asyncio.sleep(delay)
 
     async def _visit_page(
-        self, context, url: str, depth: int
+        self, context, url: str, depth: int,
+        handle_consent_banner: bool = False,
     ) -> PageResult:
-        """Visit a single page and discover links."""
+        """Visit a page, handle consent, extract elements, discover links."""
         page = await context.new_page()
         try:
             response = await page.goto(
@@ -179,25 +193,43 @@ class CrawlEngine:
                 timeout=30000,
             )
 
+            # Wait for JS to settle
+            await page.wait_for_load_state("networkidle", timeout=10000)
+
             status_code = response.status if response else None
             title = await page.title()
+
+            # Handle consent banner on first page
+            if handle_consent_banner:
+                self.consent_result = await handle_consent(page)
+                if self.consent_result.detected:
+                    logger.info(
+                        "Consent: detected=%s, action=%s, framework=%s",
+                        self.consent_result.detected,
+                        self.consent_result.action,
+                        self.consent_result.framework,
+                    )
+
+            # Extract interactive elements
+            elements = await extract_elements(page, url)
 
             # Extract links and enqueue same-domain ones
             if depth < self.config.max_depth:
                 links = await self._extract_links(page)
                 for link in links:
-                    normalized = self._normalize_url(link)
+                    norm = self._normalize_url(link)
                     if (
-                        normalized not in self.visited
-                        and self._is_crawlable(normalized)
+                        norm not in self.visited
+                        and self._is_crawlable(norm)
                     ):
-                        await self.queue.put((normalized, depth + 1))
+                        await self.queue.put((norm, depth + 1))
 
             return PageResult(
                 url=url,
                 title=title if title else None,
                 status_code=status_code,
                 depth=depth,
+                elements=elements,
             )
 
         except Exception as e:

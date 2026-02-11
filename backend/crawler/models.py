@@ -26,11 +26,28 @@ class ScanConfig(BaseModel):
         return max(1, min(v, 20))
 
 
+class ElementResult(BaseModel):
+    page_url: str
+    page_title: Optional[str] = None
+    element_type: str  # link | button | form | menu | tab | accordion | download | unknown
+    action_type: Optional[str] = None  # navigate | submit | toggle | expand | download | other
+    element_text: Optional[str] = None
+    css_selector: Optional[str] = None
+    section_context: Optional[str] = None  # nearest H1/H2/H3
+    container_context: str = "unknown"  # header | nav | main | footer | aside | dialog | unknown
+    is_above_fold: bool = False
+    target_url: Optional[str] = None
+    is_external: bool = False
+    pharma_context: Optional[str] = None  # isi | adverse_event | patient_enrollment | hcp_gate | fair_balance
+    notes: Optional[str] = None
+
+
 class PageResult(BaseModel):
     url: str
     title: Optional[str] = None
     status_code: Optional[int] = None
     depth: int = 0
+    elements: list[ElementResult] = []
     error: Optional[str] = None
 
 

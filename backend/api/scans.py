@@ -24,20 +24,6 @@ class ScanRequest(BaseModel):
     rate_limit: float = 1.0
 
 
-class ScanResponse(BaseModel):
-    scan_id: str
-    domain: str
-    scan_url: str
-    scan_status: str
-    pages_scanned: int
-    total_pages: Optional[int] = None
-    crawl_date: Optional[str] = None
-    duration_seconds: Optional[float] = None
-    robots_txt_found: Optional[bool] = None
-    robots_txt_respected: Optional[bool] = None
-    notes: Optional[str] = None
-
-
 def _generate_scan_id(domain: str) -> str:
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     return f"{timestamp}_{domain.replace('.', '_')}"
@@ -45,8 +31,6 @@ def _generate_scan_id(domain: str) -> str:
 
 async def _run_scan(scan_id: str, config: ScanConfig, username: str):
     """Background task: execute the crawl and persist results."""
-    from db.database import get_db as _get_db
-
     engine = CrawlEngine(config)
     start = time.time()
 
@@ -71,12 +55,34 @@ async def _run_scan(scan_id: str, config: ScanConfig, username: str):
             if final_status == "running":
                 final_status = "completed"
 
+            # Determine scan quality from consent result
+            scan_quality = "clean"
+            consent_detected = 0
+            consent_action = None
+            consent_framework = None
+
+            if engine.consent_result:
+                consent_detected = 1 if engine.consent_result.detected else 0
+                consent_action = engine.consent_result.action
+                consent_framework = engine.consent_result.framework
+                if engine.consent_result.action == "failed":
+                    scan_quality = "blocked_by_consent"
+                elif engine.consent_result.action == "bypass_css":
+                    scan_quality = "partial_consent"
+
+            # Count total elements across all pages
+            total_elements = sum(len(p.elements) for p in pages)
+
             await db.execute(
                 """UPDATE scans SET
                     scan_status = ?,
                     pages_scanned = ?,
                     total_pages = ?,
                     duration_seconds = ?,
+                    scan_quality = ?,
+                    consent_detected = ?,
+                    consent_action = ?,
+                    consent_framework = ?,
                     robots_txt_found = ?,
                     robots_txt_respected = ?
                 WHERE scan_id = ?""",
@@ -85,24 +91,50 @@ async def _run_scan(scan_id: str, config: ScanConfig, username: str):
                     len(pages),
                     len(pages),
                     round(duration, 2),
+                    scan_quality,
+                    consent_detected,
+                    consent_action,
+                    consent_framework,
                     1 if engine.progress.status != "blocked_by_robots" else 0,
                     1,  # We always respect robots.txt
                     scan_id,
                 ),
             )
 
-            # Store discovered pages as elements with type 'page' for Phase 1
+            # Store extracted elements
             for page in pages:
-                if not page.error:
+                for el in page.elements:
                     await db.execute(
                         """INSERT INTO elements
-                            (scan_id, page_url, page_title, element_type, notes)
-                        VALUES (?, ?, ?, 'page', ?)""",
-                        (scan_id, page.url, page.title, page.error),
+                            (scan_id, page_url, page_title, element_type,
+                             action_type, element_text, css_selector,
+                             section_context, container_context,
+                             is_above_fold, target_url, is_external,
+                             pharma_context, notes)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            scan_id,
+                            el.page_url,
+                            el.page_title,
+                            el.element_type,
+                            el.action_type,
+                            el.element_text,
+                            el.css_selector,
+                            el.section_context,
+                            el.container_context,
+                            1 if el.is_above_fold else 0,
+                            el.target_url,
+                            1 if el.is_external else 0,
+                            el.pharma_context,
+                            el.notes,
+                        ),
                     )
 
             await db.commit()
-            logger.info("Scan %s completed: %d pages in %.1fs", scan_id, len(pages), duration)
+            logger.info(
+                "Scan %s completed: %d pages, %d elements in %.1fs",
+                scan_id, len(pages), total_elements, duration,
+            )
 
         except Exception as e:
             logger.error("Scan %s failed: %s", scan_id, str(e))
@@ -183,7 +215,7 @@ async def get_scan(
     user: dict = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    """Get scan details including discovered pages."""
+    """Get scan details including extracted elements."""
     cursor = await db.execute(
         "SELECT * FROM scans WHERE scan_id = ? AND created_by = ?",
         (scan_id, user["username"]),
@@ -192,16 +224,34 @@ async def get_scan(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    # Get elements (pages in Phase 1)
+    # Get all extracted elements
     cursor = await db.execute(
-        """SELECT page_url, page_title, element_type, notes
+        """SELECT page_url, page_title, element_type, action_type,
+                  element_text, css_selector, section_context,
+                  container_context, is_above_fold, target_url,
+                  is_external, pharma_context, notes
            FROM elements WHERE scan_id = ?
            ORDER BY id""",
         (scan_id,),
     )
     elements = await cursor.fetchall()
 
+    # Summary stats
+    element_list = [dict(e) for e in elements]
+    type_counts = {}
+    pharma_count = 0
+    for el in element_list:
+        t = el.get("element_type", "unknown")
+        type_counts[t] = type_counts.get(t, 0) + 1
+        if el.get("pharma_context"):
+            pharma_count += 1
+
     return {
         "scan": dict(scan),
-        "elements": [dict(e) for e in elements],
+        "elements": element_list,
+        "summary": {
+            "total_elements": len(element_list),
+            "by_type": type_counts,
+            "pharma_flagged": pharma_count,
+        },
     }
