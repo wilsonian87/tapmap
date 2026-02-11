@@ -1,0 +1,58 @@
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from db.database import init_db
+from auth.routes import router as auth_router
+from api.scans import router as scans_router
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Initializing database...")
+    await init_db()
+    logger.info("TapMap ready.")
+    yield
+    logger.info("Shutting down.")
+
+
+app = FastAPI(
+    title="TapMap",
+    description="Pharma website interaction discovery tool",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+# CORS for development (Vite dev server)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# API routes
+app.include_router(auth_router)
+app.include_router(scans_router)
+
+
+# Serve frontend static files in production
+frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "service": "tapmap"}
