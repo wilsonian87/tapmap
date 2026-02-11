@@ -1,7 +1,10 @@
+import ipaddress
 import time
 import logging
+import traceback
 from datetime import datetime
 from urllib.parse import urlparse
+import socket
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from pydantic import BaseModel
 from typing import Optional
@@ -137,10 +140,13 @@ async def _run_scan(scan_id: str, config: ScanConfig, username: str):
             )
 
         except Exception as e:
-            logger.error("Scan %s failed: %s", scan_id, str(e))
+            logger.error(
+                "Scan %s failed: %s\n%s",
+                scan_id, str(e), traceback.format_exc(),
+            )
             await db.execute(
                 "UPDATE scans SET scan_status = ?, notes = ? WHERE scan_id = ?",
-                ("failed", str(e), scan_id),
+                ("failed", str(e)[:500], scan_id),
             )
             await db.commit()
 
@@ -159,6 +165,34 @@ async def create_scan(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Invalid URL. Include scheme (https://)",
+        )
+
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only http and https URLs are supported",
+        )
+
+    # SSRF protection: block private/reserved IPs
+    hostname = parsed.hostname or ""
+    if hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1", ""):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cannot scan localhost or loopback addresses",
+        )
+    try:
+        resolved = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC)
+        for _, _, _, _, addr in resolved:
+            ip = ipaddress.ip_address(addr[0])
+            if ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_link_local:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Cannot scan private or reserved IP addresses",
+                )
+    except socket.gaierror:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Could not resolve hostname",
         )
 
     domain = parsed.netloc

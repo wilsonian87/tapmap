@@ -109,7 +109,10 @@ class CrawlEngine:
             )
 
             try:
-                await self._crawl_loop(context, robots)
+                await asyncio.wait_for(
+                    self._crawl_loop(context, robots),
+                    timeout=settings.scan_timeout_seconds,
+                )
             except asyncio.TimeoutError:
                 logger.warning("Crawl timed out after %ds", settings.scan_timeout_seconds)
                 self.progress.status = "timeout"
@@ -193,10 +196,43 @@ class CrawlEngine:
                 timeout=30000,
             )
 
-            # Wait for JS to settle
-            await page.wait_for_load_state("networkidle", timeout=10000)
+            if not response:
+                return PageResult(url=url, depth=depth, error="No response")
 
-            status_code = response.status if response else None
+            status_code = response.status
+
+            # Skip non-success responses
+            if status_code >= 400:
+                logger.info("Skipping %s (HTTP %d)", url, status_code)
+                return PageResult(
+                    url=url, depth=depth, status_code=status_code,
+                    error=f"HTTP {status_code}",
+                )
+
+            # Detect cross-domain redirects
+            final_url = page.url
+            if not self._is_same_domain(final_url):
+                logger.info("Skipping %s (redirected to %s)", url, final_url)
+                return PageResult(
+                    url=url, depth=depth, status_code=status_code,
+                    error=f"Redirected off-domain to {final_url}",
+                )
+
+            # Check content-type — only extract from HTML
+            content_type = response.headers.get("content-type", "")
+            if content_type and "html" not in content_type.lower():
+                logger.info("Skipping %s (content-type: %s)", url, content_type)
+                return PageResult(
+                    url=url, depth=depth, status_code=status_code,
+                    error=f"Non-HTML content: {content_type}",
+                )
+
+            # Wait for JS to settle
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass  # networkidle timeout is non-fatal
+
             title = await page.title()
 
             # Handle consent banner on first page

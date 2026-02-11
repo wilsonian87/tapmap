@@ -18,7 +18,12 @@ function Dashboard() {
     retry: false,
   });
 
-  const { data: scans, refetch: refetchScans } = useQuery({
+  const {
+    data: scans,
+    refetch: refetchScans,
+    isLoading: scansLoading,
+    error: scansError,
+  } = useQuery({
     queryKey: ["scans"],
     queryFn: listScans,
     refetchInterval: 5000,
@@ -97,7 +102,17 @@ function Dashboard() {
 
       <div>
         <h2 className="mb-4 text-lg font-semibold">Scan History</h2>
-        {!scans || scans.length === 0 ? (
+        {scansLoading ? (
+          <div className="rounded-xl border bg-card p-8 text-center">
+            <p className="text-muted-foreground">Loading scans...</p>
+          </div>
+        ) : scansError ? (
+          <div className="rounded-xl border bg-card p-8 text-center">
+            <p className="text-destructive">
+              Failed to load scans: {scansError instanceof Error ? scansError.message : "Unknown error"}
+            </p>
+          </div>
+        ) : !scans || scans.length === 0 ? (
           <div className="rounded-xl border bg-card p-8 text-center">
             <p className="text-muted-foreground">
               No scans yet. Enter a pharma brand URL above to get started.
@@ -122,7 +137,9 @@ function Dashboard() {
                     className="border-b last:border-0 hover:bg-muted/50 cursor-pointer"
                     onClick={() => setSelectedScan(scan.scan_id)}
                   >
-                    <td className="px-4 py-3 font-medium">{scan.domain}</td>
+                    <td className="px-4 py-3 font-medium max-w-[200px] truncate">
+                      {scan.domain}
+                    </td>
                     <td className="px-4 py-3">
                       <span
                         className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${statusBadge(scan.scan_status)}`}

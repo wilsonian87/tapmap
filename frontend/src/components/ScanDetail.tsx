@@ -32,6 +32,8 @@ export function ScanDetail({ scanId, onBack }: Props) {
   const [containerFilter, setContainerFilter] = useState<string | null>(null);
   const [pharmaOnly, setPharmaOnly] = useState(false);
   const [searchText, setSearchText] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  const PAGE_SIZE = 200;
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["scan", scanId],
@@ -93,8 +95,8 @@ export function ScanDetail({ scanId, onBack }: Props) {
           >
             &larr; Back to scans
           </button>
-          <h2 className="text-xl font-bold">{String(scan.domain)}</h2>
-          <p className="text-sm text-muted-foreground">{String(scan.scan_url)}</p>
+          <h2 className="text-xl font-bold truncate max-w-md">{String(scan.domain)}</h2>
+          <p className="text-sm text-muted-foreground truncate max-w-md">{String(scan.scan_url)}</p>
         </div>
         {!isRunning && elements.length > 0 && (
           <div className="flex gap-2">
@@ -148,6 +150,27 @@ export function ScanDetail({ scanId, onBack }: Props) {
             label="Duration"
             value={scan.duration_seconds ? `${Number(scan.duration_seconds).toFixed(1)}s` : "—"}
           />
+        </div>
+      )}
+
+      {/* Failed / timeout scan banner */}
+      {!isRunning && (scan.scan_status === "failed" || scan.scan_status === "timeout") && (
+        <div className="mb-6 rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+          <p className="font-medium text-destructive">
+            Scan {scan.scan_status === "timeout" ? "timed out" : "failed"}
+          </p>
+          {scan.notes ? (
+            <p className="mt-1 text-sm text-muted-foreground">{String(scan.notes)}</p>
+          ) : null}
+        </div>
+      )}
+
+      {/* Empty state for 0 elements */}
+      {!isRunning && scan.scan_status === "completed" && summary.total_elements === 0 && (
+        <div className="mb-6 rounded-xl border bg-card p-8 text-center">
+          <p className="text-muted-foreground">
+            No interactive elements found on this site. This may indicate anti-bot protection or a very minimal page.
+          </p>
         </div>
       )}
 
@@ -211,27 +234,41 @@ export function ScanDetail({ scanId, onBack }: Props) {
       )}
 
       {/* Element table */}
-      {!isRunning && filtered.length > 0 && (
-        <div className="overflow-x-auto rounded-xl border bg-card">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-4 py-3">Type</th>
-                <th className="px-4 py-3">Element Text</th>
-                <th className="px-4 py-3">Container</th>
-                <th className="px-4 py-3">Section</th>
-                <th className="px-4 py-3">Page</th>
-                <th className="px-4 py-3">Pharma</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((el, i) => (
-                <ElementRow key={i} element={el} />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {!isRunning && filtered.length > 0 && (() => {
+        const displayElements = showAll ? filtered : filtered.slice(0, PAGE_SIZE);
+        const hasMore = filtered.length > PAGE_SIZE;
+        return (
+          <>
+            <div className="overflow-x-auto rounded-xl border bg-card">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
+                    <th className="px-4 py-3">Type</th>
+                    <th className="px-4 py-3">Element Text</th>
+                    <th className="px-4 py-3">Container</th>
+                    <th className="px-4 py-3">Section</th>
+                    <th className="px-4 py-3">Page</th>
+                    <th className="px-4 py-3">Pharma</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayElements.map((el, i) => (
+                    <ElementRow key={i} element={el} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {hasMore && !showAll && (
+              <button
+                onClick={() => setShowAll(true)}
+                className="mt-3 w-full rounded-lg border px-4 py-2 text-sm text-muted-foreground hover:bg-muted"
+              >
+                Show all {filtered.length} elements ({filtered.length - PAGE_SIZE} more)
+              </button>
+            )}
+          </>
+        );
+      })()}
 
       {/* Scan info footer */}
       {!isRunning && (

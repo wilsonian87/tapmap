@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     session_cookie_name: str = "tapmap_session"
     session_max_age: int = 86400  # 24 hours
 
+    # CORS
+    cors_origins: str = "http://localhost:5173"
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     @property

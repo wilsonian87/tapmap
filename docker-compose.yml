@@ -1,0 +1,15 @@
+services:
+  tapmap:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - tapmap-data:/app/backend/data
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - DATABASE_PATH=data/tapmap.db
+      - CORS_ORIGINS=http://localhost:8000
+    restart: unless-stopped
+
+volumes:
+  tapmap-data:
