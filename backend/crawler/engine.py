@@ -102,7 +102,10 @@ class CrawlEngine:
         await self.queue.put((start_url, 0))
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            )
             context = await browser.new_context(
                 user_agent=settings.user_agent,
                 viewport={"width": 1280, "height": 800},
