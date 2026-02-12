@@ -50,12 +50,12 @@ app.include_router(scans_router)
 app.include_router(exports_router)
 
 
-# Serve frontend static files in production
-frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
-if frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
-
-
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "service": "tapmap"}
+
+
+# Serve frontend static files in production (must be last — catch-all mount)
+frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
+if frontend_dist.exists():
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
