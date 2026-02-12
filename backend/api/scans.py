@@ -1,4 +1,5 @@
 import ipaddress
+import re
 import time
 import logging
 import traceback
@@ -29,7 +30,8 @@ class ScanRequest(BaseModel):
 
 def _generate_scan_id(domain: str) -> str:
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{timestamp}_{domain.replace('.', '_')}"
+    safe_domain = re.sub(r"[^a-zA-Z0-9_-]", "_", domain)[:60]
+    return f"{timestamp}_{safe_domain}"
 
 
 async def _run_scan(scan_id: str, config: ScanConfig, username: str):
@@ -144,9 +146,11 @@ async def _run_scan(scan_id: str, config: ScanConfig, username: str):
                 "Scan %s failed: %s\n%s",
                 scan_id, str(e), traceback.format_exc(),
             )
+            # Store user-safe error message (no paths or stack traces)
+            safe_msg = str(e).split("\n")[0][:200]
             await db.execute(
                 "UPDATE scans SET scan_status = ?, notes = ? WHERE scan_id = ?",
-                ("failed", str(e)[:500], scan_id),
+                ("failed", safe_msg, scan_id),
             )
             await db.commit()
 

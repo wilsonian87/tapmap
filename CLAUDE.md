@@ -52,4 +52,4 @@ cd backend && python -m pytest ../tests/
 Pharma-exclusive tool. Elements like ISI links, PI downloads, adverse event reporting, patient enrollment forms are high-value by default. Flag pharma-specific patterns in extraction output.
 
 ## Current Phase
-Phase 3 complete — UI results viewer, XLSX/CSV export. Next: Phase 4 (Harden + Ship).
+Phase 4 complete — All build phases delivered. MVP ready for deployment.
