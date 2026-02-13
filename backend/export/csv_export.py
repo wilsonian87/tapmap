@@ -23,18 +23,26 @@ COLUMNS = [
 ]
 
 
-def generate_csv(elements: list[dict]) -> str:
+def generate_csv(elements: list[dict], tag_name: str = "Pharma", dedup: bool = False) -> str:
     """Generate CSV string from extracted elements."""
     output = io.StringIO()
     writer = csv.writer(output)
 
+    # Build columns with dynamic tag label
+    columns = [
+        (tag_name + " Context" if field == "pharma_context" else header, field)
+        for header, field in COLUMNS
+    ]
+    if dedup:
+        columns.insert(1, ("Page Count", "page_count"))
+
     # Header
-    writer.writerow([header for header, _ in COLUMNS])
+    writer.writerow([header for header, _ in columns])
 
     # Data
     for element in elements:
         row = []
-        for _, field in COLUMNS:
+        for _, field in columns:
             value = element.get(field)
             if field == "is_above_fold":
                 value = "Yes" if value else "No"

@@ -54,8 +54,8 @@ PHARMA_PATTERNS = {
 }
 
 
-def detect_pharma_context(text: str | None, url: str | None = None) -> str | None:
-    """Check element text/URL against known pharma patterns."""
+def _detect_pharma_builtin(text: str | None, url: str | None = None) -> str | None:
+    """Check element text/URL against built-in pharma patterns (V1 behavior)."""
     if not text:
         return None
     text_lower = text.lower()
@@ -70,6 +70,38 @@ def detect_pharma_context(text: str | None, url: str | None = None) -> str | Non
             return "isi"
         if "medguide" in url_lower or "medication-guide" in url_lower:
             return "isi"
+    return None
+
+
+def detect_tag_context(
+    text: str | None,
+    url: str | None = None,
+    tag_name: str = "Pharma",
+    keywords: list[str] | None = None,
+) -> str | None:
+    """Detect tag context for an element.
+
+    - tag_name="Pharma" + keywords=None → uses built-in PHARMA_PATTERNS
+    - Custom tag with keywords → substring match against keyword list
+    - Returns matched keyword/category string or None
+    """
+    if tag_name == "Pharma" and not keywords:
+        return _detect_pharma_builtin(text, url)
+
+    if not keywords:
+        return None
+
+    combined = ""
+    if text:
+        combined += text.lower()
+    if url:
+        combined += " " + url.lower()
+    if not combined.strip():
+        return None
+
+    for keyword in keywords:
+        if keyword.lower() in combined:
+            return keyword
     return None
 
 
@@ -348,7 +380,12 @@ EXTRACTION_JS = """
 """
 
 
-async def extract_elements(page: Page, page_url: str) -> list[ElementResult]:
+async def extract_elements(
+    page: Page,
+    page_url: str,
+    tag_name: str = "Pharma",
+    tag_keywords: list[str] | None = None,
+) -> list[ElementResult]:
     """Extract all interactive elements from a page.
 
     Returns structured ElementResult objects with full metadata.
@@ -363,10 +400,12 @@ async def extract_elements(page: Page, page_url: str) -> list[ElementResult]:
     page_title = await page.title() or None
 
     for raw in raw_elements:
-        # Detect pharma-specific context
-        pharma_ctx = detect_pharma_context(
+        # Detect tag context (pharma builtin or custom keywords)
+        pharma_ctx = detect_tag_context(
             raw.get("element_text"),
             raw.get("target_url"),
+            tag_name=tag_name,
+            keywords=tag_keywords,
         )
 
         results.append(ElementResult(

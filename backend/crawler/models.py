@@ -7,6 +7,8 @@ class ScanConfig(BaseModel):
     max_pages: int = 200
     max_depth: int = 5
     rate_limit: float = 1.0
+    tag_name: str = "Pharma"
+    tag_keywords: Optional[list[str]] = None
 
     @field_validator("rate_limit")
     @classmethod
@@ -48,6 +50,7 @@ class PageResult(BaseModel):
     status_code: Optional[int] = None
     depth: int = 0
     elements: list[ElementResult] = []
+    analytics: list[str] = []
     error: Optional[str] = None
 
 

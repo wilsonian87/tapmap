@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import re
 import time
 import logging
@@ -6,7 +7,7 @@ import traceback
 from datetime import datetime
 from urllib.parse import urlparse
 import socket
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query, status
 from pydantic import BaseModel
 from typing import Optional
 import aiosqlite
@@ -26,6 +27,8 @@ class ScanRequest(BaseModel):
     max_pages: int = 200
     max_depth: int = 5
     rate_limit: float = 1.0
+    tag_name: str = "Pharma"
+    tag_keywords: Optional[list[str]] = None
 
 
 def _generate_scan_id(domain: str) -> str:
@@ -78,6 +81,12 @@ async def _run_scan(scan_id: str, config: ScanConfig, username: str):
             # Count total elements across all pages
             total_elements = sum(len(p.elements) for p in pages)
 
+            # Aggregate analytics frameworks across all pages
+            all_analytics = set()
+            for p in pages:
+                all_analytics.update(p.analytics)
+            analytics_json = json.dumps(sorted(all_analytics)) if all_analytics else None
+
             await db.execute(
                 """UPDATE scans SET
                     scan_status = ?,
@@ -89,7 +98,8 @@ async def _run_scan(scan_id: str, config: ScanConfig, username: str):
                     consent_action = ?,
                     consent_framework = ?,
                     robots_txt_found = ?,
-                    robots_txt_respected = ?
+                    robots_txt_respected = ?,
+                    analytics_detected = ?
                 WHERE scan_id = ?""",
                 (
                     final_status,
@@ -102,6 +112,7 @@ async def _run_scan(scan_id: str, config: ScanConfig, username: str):
                     consent_framework,
                     1 if engine.progress.status != "blocked_by_robots" else 0,
                     1,  # We always respect robots.txt
+                    analytics_json,
                     scan_id,
                 ),
             )
@@ -207,18 +218,25 @@ async def create_scan(
         max_pages=body.max_pages,
         max_depth=body.max_depth,
         rate_limit=body.rate_limit,
+        tag_name=body.tag_name,
+        tag_keywords=body.tag_keywords,
     )
+
+    # Serialize tag_keywords for DB storage
+    tag_keywords_json = json.dumps(body.tag_keywords) if body.tag_keywords else None
 
     # Insert scan record
     await db.execute(
         """INSERT INTO scans
             (scan_id, domain, scan_url, scan_status, config_max_pages,
-             config_max_depth, config_rate_limit, created_by)
-        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)""",
+             config_max_depth, config_rate_limit, created_by,
+             tag_name, tag_keywords)
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)""",
         (
             scan_id, domain, body.url,
             config.max_pages, config.max_depth, config.rate_limit,
             user["username"],
+            body.tag_name, tag_keywords_json,
         ),
     )
     await db.commit()
@@ -250,10 +268,17 @@ async def list_scans(
 @router.get("/{scan_id}")
 async def get_scan(
     scan_id: str,
+    dedup: bool = Query(False),
+    hide_types: Optional[str] = Query(None),
     user: dict = Depends(get_current_user),
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    """Get scan details including extracted elements."""
+    """Get scan details including extracted elements.
+
+    Query params:
+    - dedup=true: collapse identical elements across pages
+    - hide_types=link,button: exclude element types (comma-separated)
+    """
     cursor = await db.execute(
         "SELECT * FROM scans WHERE scan_id = ? AND created_by = ?",
         (scan_id, user["username"]),
@@ -262,34 +287,80 @@ async def get_scan(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    # Get all extracted elements
-    cursor = await db.execute(
-        """SELECT page_url, page_title, element_type, action_type,
+    # Build type exclusion filter
+    excluded_types = set()
+    if hide_types:
+        excluded_types = {t.strip().lower() for t in hide_types.split(",") if t.strip()}
+
+    if dedup:
+        # Deduplicated query: GROUP BY key fields
+        cursor = await db.execute(
+            """SELECT
+                  MIN(page_url) as page_url,
+                  MIN(page_title) as page_title,
+                  element_type, action_type,
                   element_text, css_selector, section_context,
-                  container_context, is_above_fold, target_url,
-                  is_external, pharma_context, notes
-           FROM elements WHERE scan_id = ?
-           ORDER BY id""",
-        (scan_id,),
-    )
+                  MIN(container_context) as container_context,
+                  MAX(is_above_fold) as is_above_fold,
+                  target_url,
+                  MAX(is_external) as is_external,
+                  MIN(pharma_context) as pharma_context,
+                  MIN(notes) as notes,
+                  COUNT(*) as page_count,
+                  GROUP_CONCAT(DISTINCT page_url) as page_urls
+               FROM elements WHERE scan_id = ?
+               GROUP BY COALESCE(element_text, ''), COALESCE(css_selector, ''), COALESCE(target_url, '')
+               ORDER BY page_count DESC, element_type""",
+            (scan_id,),
+        )
+    else:
+        cursor = await db.execute(
+            """SELECT page_url, page_title, element_type, action_type,
+                      element_text, css_selector, section_context,
+                      container_context, is_above_fold, target_url,
+                      is_external, pharma_context, notes
+               FROM elements WHERE scan_id = ?
+               ORDER BY id""",
+            (scan_id,),
+        )
+
     elements = await cursor.fetchall()
 
-    # Summary stats
-    element_list = [dict(e) for e in elements]
+    # Apply type exclusion and build stats from unfiltered data
+    all_elements = [dict(e) for e in elements]
+
+    # Summary stats (computed on full set before type filtering)
     type_counts = {}
     pharma_count = 0
-    for el in element_list:
+    for el in all_elements:
         t = el.get("element_type", "unknown")
         type_counts[t] = type_counts.get(t, 0) + 1
         if el.get("pharma_context"):
             pharma_count += 1
 
+    # Apply type exclusion
+    if excluded_types:
+        element_list = [
+            el for el in all_elements
+            if el.get("element_type", "").lower() not in excluded_types
+        ]
+    else:
+        element_list = all_elements
+
+    # Parse analytics JSON
+    analytics_raw = scan["analytics_detected"]
+    analytics_list = json.loads(analytics_raw) if analytics_raw else []
+
+    tag_name = scan["tag_name"] or "Pharma"
+
     return {
         "scan": dict(scan),
         "elements": element_list,
         "summary": {
-            "total_elements": len(element_list),
+            "total_elements": len(all_elements),
             "by_type": type_counts,
             "pharma_flagged": pharma_count,
+            "analytics_detected": analytics_list,
+            "tag_name": tag_name,
         },
     }

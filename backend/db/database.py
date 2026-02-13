@@ -78,10 +78,27 @@ async def get_db() -> aiosqlite.Connection:
         await db.close()
 
 
+async def _migrate_schema(db):
+    """Add new columns to existing tables (safe for fresh DBs too)."""
+    cursor = await db.execute("PRAGMA table_info(scans)")
+    existing = {row[1] for row in await cursor.fetchall()}
+
+    migrations = {
+        "analytics_detected": "ALTER TABLE scans ADD COLUMN analytics_detected TEXT",
+        "tag_name": "ALTER TABLE scans ADD COLUMN tag_name TEXT DEFAULT 'Pharma'",
+        "tag_keywords": "ALTER TABLE scans ADD COLUMN tag_keywords TEXT",
+    }
+    for col, sql in migrations.items():
+        if col not in existing:
+            await db.execute(sql)
+    await db.commit()
+
+
 async def init_db():
     """Initialize database schema."""
     db_path = Path(settings.database_url)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(str(db_path)) as db:
         await db.executescript(SCHEMA_SQL)
+        await _migrate_schema(db)
         await db.commit()

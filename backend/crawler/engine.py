@@ -9,6 +9,7 @@ from crawler.models import ScanConfig, PageResult, CrawlProgress
 from crawler.robots import check_robots_txt
 from crawler.extractor import extract_elements
 from crawler.consent import handle_consent, ConsentResult
+from crawler.analytics import detect_analytics
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -238,6 +239,9 @@ class CrawlEngine:
 
             title = await page.title()
 
+            # Detect analytics frameworks
+            page_analytics = await detect_analytics(page)
+
             # Handle consent banner on first page
             if handle_consent_banner:
                 self.consent_result = await handle_consent(page)
@@ -250,7 +254,11 @@ class CrawlEngine:
                     )
 
             # Extract interactive elements
-            elements = await extract_elements(page, url)
+            elements = await extract_elements(
+                page, url,
+                tag_name=self.config.tag_name,
+                tag_keywords=self.config.tag_keywords,
+            )
 
             # Extract links and enqueue same-domain ones
             if depth < self.config.max_depth:
@@ -269,6 +277,7 @@ class CrawlEngine:
                 status_code=status_code,
                 depth=depth,
                 elements=elements,
+                analytics=page_analytics,
             )
 
         except Exception as e:

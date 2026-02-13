@@ -8,6 +8,7 @@ Produces a spreadsheet with:
 """
 
 import io
+import json
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -53,6 +54,7 @@ THIN_BORDER = Border(
 def generate_xlsx(
     elements: list[dict],
     scan_info: dict,
+    dedup: bool = False,
 ) -> io.BytesIO:
     """Generate an XLSX workbook from extracted elements.
 
@@ -60,12 +62,25 @@ def generate_xlsx(
     """
     wb = Workbook()
 
+    # Dynamic tag name for column header
+    tag_name = scan_info.get("tag_name") or "Pharma"
+
+    # Build columns with dynamic tag label
+    columns = [
+        (tag_name + " Context" if field == "pharma_context" else header, field, width)
+        for header, field, width in COLUMNS
+    ]
+
+    # Insert Page Count column after Page URL when dedup is active
+    if dedup:
+        columns.insert(1, ("Page Count", "page_count", 12))
+
     # === Elements Sheet ===
     ws = wb.active
     ws.title = "Elements"
 
     # Write headers
-    for col_idx, (header, _, width) in enumerate(COLUMNS, 1):
+    for col_idx, (header, _, width) in enumerate(columns, 1):
         cell = ws.cell(row=1, column=col_idx, value=header)
         cell.font = HEADER_FONT
         cell.fill = HEADER_FILL
@@ -74,7 +89,7 @@ def generate_xlsx(
 
     # Write data rows
     for row_idx, element in enumerate(elements, 2):
-        for col_idx, (_, field, _) in enumerate(COLUMNS, 1):
+        for col_idx, (_, field, _) in enumerate(columns, 1):
             value = element.get(field)
 
             # Convert booleans to readable text
@@ -97,14 +112,14 @@ def generate_xlsx(
         pharma_ctx = element.get("pharma_context")
         if pharma_ctx:
             pharma_col = next(
-                i for i, (_, f, _) in enumerate(COLUMNS, 1) if f == "pharma_context"
+                i for i, (_, f, _) in enumerate(columns, 1) if f == "pharma_context"
             )
             ws.cell(row=row_idx, column=pharma_col).fill = PHARMA_FILL
 
         # Highlight external links
         if element.get("is_external"):
             ext_col = next(
-                i for i, (_, f, _) in enumerate(COLUMNS, 1) if f == "is_external"
+                i for i, (_, f, _) in enumerate(columns, 1) if f == "is_external"
             )
             ws.cell(row=row_idx, column=ext_col).fill = EXTERNAL_FILL
 
@@ -113,7 +128,7 @@ def generate_xlsx(
 
     # Auto-filter
     if elements:
-        last_col = get_column_letter(len(COLUMNS))
+        last_col = get_column_letter(len(columns))
         ws.auto_filter.ref = f"A1:{last_col}{len(elements) + 1}"
 
     # Set row height for header
@@ -138,6 +153,14 @@ def generate_xlsx(
         ("robots.txt Found", "Yes" if scan_info.get("robots_txt_found") else "No"),
         ("robots.txt Respected", "Yes" if scan_info.get("robots_txt_respected") else "No"),
     ]
+
+    # Analytics detected
+    analytics_raw = scan_info.get("analytics_detected")
+    if analytics_raw:
+        analytics_list = json.loads(analytics_raw) if isinstance(analytics_raw, str) else analytics_raw
+        summary_data.append(("Analytics Detected", ", ".join(analytics_list) if analytics_list else "None"))
+    else:
+        summary_data.append(("Analytics Detected", "None"))
 
     # Type breakdown
     type_counts = {}

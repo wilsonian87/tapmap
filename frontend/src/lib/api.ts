@@ -47,6 +47,8 @@ export interface ScanRequest {
   max_pages?: number;
   max_depth?: number;
   rate_limit?: number;
+  tag_name?: string;
+  tag_keywords?: string[];
 }
 
 export interface ScanSummary {
@@ -74,6 +76,8 @@ export interface ScanElement {
   is_external: number;
   pharma_context: string | null;
   notes: string | null;
+  page_count?: number;
+  page_urls?: string;
 }
 
 export interface ScanDetail {
@@ -83,6 +87,8 @@ export interface ScanDetail {
     total_elements: number;
     by_type: Record<string, number>;
     pharma_flagged: number;
+    analytics_detected: string[];
+    tag_name: string;
   };
 }
 
@@ -97,11 +103,16 @@ export function listScans() {
   return request<ScanSummary[]>("/scans");
 }
 
-export function getScan(scanId: string) {
-  return request<ScanDetail>(`/scans/${scanId}`);
+export function getScan(scanId: string, params?: { dedup?: boolean; hide_types?: string }) {
+  const searchParams = new URLSearchParams();
+  if (params?.dedup) searchParams.set("dedup", "true");
+  if (params?.hide_types) searchParams.set("hide_types", params.hide_types);
+  const qs = searchParams.toString();
+  return request<ScanDetail>(`/scans/${scanId}${qs ? `?${qs}` : ""}`);
 }
 
 // Exports
-export function getExportUrl(scanId: string, format: "xlsx" | "csv") {
-  return `${BASE}/exports/${scanId}/${format}`;
+export function getExportUrl(scanId: string, format: "xlsx" | "csv", dedup?: boolean) {
+  const base = `${BASE}/exports/${scanId}/${format}`;
+  return dedup ? `${base}?dedup=true` : base;
 }
