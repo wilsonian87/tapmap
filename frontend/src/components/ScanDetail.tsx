@@ -10,6 +10,16 @@ interface Props {
   onBack: () => void;
 }
 
+/** Convert a full URL to a relative path (e.g. "/" for homepage, "/about" for subpages). */
+function toRelativePath(fullUrl: string): string {
+  try {
+    const u = new URL(fullUrl);
+    return u.pathname === "/" ? "/" : u.pathname.replace(/\/$/, "") + u.search;
+  } catch {
+    return fullUrl;
+  }
+}
+
 const TYPE_COLORS: Record<string, string> = {
   link: "bg-blue-100 text-blue-700",
   button: "bg-purple-100 text-purple-700",
@@ -457,9 +467,12 @@ export function ScanDetail({ scanId, onBack }: Props) {
           <div className="space-y-1.5">
             {pageBreakdown.map((p) => (
               <div key={p.url} className="flex items-baseline justify-between gap-3 text-[13px]">
-                <span className="truncate min-w-0 text-muted-foreground" title={p.url}>
-                  {p.title || p.url}
-                </span>
+                <div className="truncate min-w-0" title={p.url}>
+                  <span className="font-medium">{toRelativePath(p.url)}</span>
+                  {p.title && (
+                    <span className="ml-1.5 text-muted-foreground">{p.title}</span>
+                  )}
+                </div>
                 <span className="shrink-0 font-medium">{p.count} elements</span>
               </div>
             ))}
@@ -519,8 +532,8 @@ function ElementRow({ element: el }: { element: ScanElement }) {
         <td className="px-3 py-2 max-w-[200px] truncate text-muted-foreground">
           {el.section_context || "\u2014"}
         </td>
-        <td className="px-3 py-2 max-w-[200px] truncate text-muted-foreground">
-          {el.page_title || el.page_url}
+        <td className="px-3 py-2 max-w-[200px] truncate text-muted-foreground" title={el.page_url}>
+          {el.page_title || toRelativePath(el.page_url)}
         </td>
         <td className="px-3 py-2">
           {el.pharma_context && (
@@ -541,8 +554,8 @@ function ElementRow({ element: el }: { element: ScanElement }) {
                 </code>
               </div>
               <div>
-                <span className="font-medium text-muted-foreground">Page URL:</span>
-                <span className="ml-1 break-all">{el.page_url}</span>
+                <span className="font-medium text-muted-foreground">Page:</span>
+                <span className="ml-1 break-all" title={el.page_url}>{toRelativePath(el.page_url)}</span>
               </div>
               {el.target_url && (
                 <div>
@@ -564,7 +577,7 @@ function ElementRow({ element: el }: { element: ScanElement }) {
                   <span className="font-medium text-muted-foreground">Seen on pages:</span>
                   <ul className="mt-1 list-disc pl-4 space-y-0.5">
                     {el.page_urls.split(",").map((url, i) => (
-                      <li key={i} className="break-all">{url}</li>
+                      <li key={i} className="break-all" title={url}>{toRelativePath(url)}</li>
                     ))}
                   </ul>
                 </div>
