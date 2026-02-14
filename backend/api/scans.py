@@ -213,6 +213,17 @@ async def create_scan(
     domain = parsed.netloc
     scan_id = _generate_scan_id(domain)
 
+    # Fetch admin limits and clamp user-requested values
+    cursor = await db.execute("SELECT * FROM admin_settings WHERE id = 1")
+    limits = await cursor.fetchone()
+    if limits:
+        body.max_pages = min(body.max_pages, limits["max_pages_limit"])
+        body.max_depth = min(body.max_depth, limits["max_depth_limit"])
+        body.rate_limit = max(
+            limits["rate_limit_floor"],
+            min(body.rate_limit, limits["rate_limit_ceiling"]),
+        )
+
     config = ScanConfig(
         url=body.url,
         max_pages=body.max_pages,

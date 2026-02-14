@@ -61,6 +61,20 @@ CREATE INDEX IF NOT EXISTS idx_elements_scan_id ON elements(scan_id);
 CREATE INDEX IF NOT EXISTS idx_scans_domain ON scans(domain);
 CREATE INDEX IF NOT EXISTS idx_scans_status ON scans(scan_status);
 CREATE INDEX IF NOT EXISTS idx_scans_created_by ON scans(created_by);
+
+CREATE TABLE IF NOT EXISTS admin_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    max_pages_limit INTEGER NOT NULL DEFAULT 1000,
+    max_depth_limit INTEGER NOT NULL DEFAULT 20,
+    rate_limit_floor REAL NOT NULL DEFAULT 0.5,
+    rate_limit_ceiling REAL NOT NULL DEFAULT 5.0,
+    scan_timeout_seconds INTEGER NOT NULL DEFAULT 900,
+    auto_purge_enabled INTEGER NOT NULL DEFAULT 0,
+    auto_purge_days INTEGER NOT NULL DEFAULT 90,
+    last_purge_run TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_by TEXT
+);
 """
 
 
@@ -91,6 +105,9 @@ async def _migrate_schema(db):
     for col, sql in migrations.items():
         if col not in existing:
             await db.execute(sql)
+
+    # Seed admin_settings singleton row
+    await db.execute("INSERT OR IGNORE INTO admin_settings (id) VALUES (1)")
     await db.commit()
 
 

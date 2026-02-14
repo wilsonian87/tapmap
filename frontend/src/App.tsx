@@ -3,14 +3,17 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { LoginForm } from "./components/LoginForm";
 import { ScanForm } from "./components/ScanForm";
 import { ScanDetail } from "./components/ScanDetail";
+import { AdminPanel } from "./components/AdminPanel";
 import { getMe, logout, listScans } from "./lib/api";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1 } },
 });
 
+type View = { page: "scans" } | { page: "scan-detail"; scanId: string } | { page: "admin" };
+
 function Dashboard() {
-  const [selectedScan, setSelectedScan] = useState<string | null>(null);
+  const [view, setView] = useState<View>({ page: "scans" });
 
   const { data: user } = useQuery({
     queryKey: ["me"],
@@ -46,8 +49,13 @@ function Dashboard() {
     return styles[status] || styles.pending;
   };
 
-  // If a scan is selected, show detail view
-  if (selectedScan) {
+  // Admin panel
+  if (view.page === "admin") {
+    return <AdminPanel onBack={() => setView({ page: "scans" })} />;
+  }
+
+  // Scan detail view
+  if (view.page === "scan-detail") {
     return (
       <div className="mx-auto max-w-6xl p-6 sm:p-8">
         <header className="mb-6 flex items-center justify-between">
@@ -63,8 +71,8 @@ function Dashboard() {
           </div>
         </header>
         <ScanDetail
-          scanId={selectedScan}
-          onBack={() => setSelectedScan(null)}
+          scanId={view.scanId}
+          onBack={() => setView({ page: "scans" })}
         />
       </div>
     );
@@ -81,6 +89,14 @@ function Dashboard() {
           </p>
         </div>
         <div className="flex items-center gap-4">
+          {user?.is_admin && (
+            <button
+              onClick={() => setView({ page: "admin" })}
+              className="rounded-lg border px-3 py-1.5 text-sm hover:bg-muted"
+            >
+              Admin
+            </button>
+          )}
           <span className="text-sm text-muted-foreground">{user?.username}</span>
           <button
             onClick={handleLogout}
@@ -94,7 +110,7 @@ function Dashboard() {
       <div className="mb-8">
         <ScanForm
           onScanCreated={(id) => {
-            setSelectedScan(id);
+            setView({ page: "scan-detail", scanId: id });
             refetchScans();
           }}
         />
@@ -135,7 +151,7 @@ function Dashboard() {
                   <tr
                     key={scan.scan_id}
                     className="border-b last:border-0 hover:bg-muted/50 cursor-pointer"
-                    onClick={() => setSelectedScan(scan.scan_id)}
+                    onClick={() => setView({ page: "scan-detail", scanId: scan.scan_id })}
                   >
                     <td className="px-4 py-3 font-medium max-w-[200px] truncate">
                       {scan.domain}

@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     scan_timeout_seconds: int = 900
     user_agent: str = "TapMap/1.0 (internal pharma audit tool)"
 
+    # Admin
+    admin_username: str = ""
+
     # Session
     session_cookie_name: str = "tapmap_session"
     session_max_age: int = 86400  # 24 hours

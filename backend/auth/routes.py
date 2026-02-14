@@ -101,4 +101,7 @@ async def logout():
 
 @router.get("/me")
 async def me(user: dict = Depends(get_current_user)):
-    return {"username": user["username"], "user_id": user["user_id"]}
+    is_admin = bool(
+        settings.admin_username and user["username"] == settings.admin_username
+    )
+    return {"username": user["username"], "user_id": user["user_id"], "is_admin": is_admin}

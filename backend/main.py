@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -10,6 +11,7 @@ from db.database import init_db
 from auth.routes import router as auth_router
 from api.scans import router as scans_router
 from api.exports import router as exports_router
+from api.admin import router as admin_router, auto_purge_loop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,7 +25,9 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
     logger.info("TapMap ready.")
+    purge_task = asyncio.create_task(auto_purge_loop())
     yield
+    purge_task.cancel()
     logger.info("Shutting down.")
 
 
@@ -48,6 +52,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(scans_router)
 app.include_router(exports_router)
+app.include_router(admin_router)
 
 
 @app.get("/api/health")
