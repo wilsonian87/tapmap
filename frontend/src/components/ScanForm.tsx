@@ -62,13 +62,25 @@ export function ScanForm({ onScanCreated }: Props) {
         />
       </div>
 
-      <button
-        type="button"
-        onClick={() => setShowAdvanced(!showAdvanced)}
-        className="mb-4 text-sm text-muted-foreground hover:text-foreground"
-      >
-        {showAdvanced ? "Hide" : "Show"} advanced settings
-      </button>
+      <div className="mb-4 flex items-center gap-4">
+        <button
+          type="button"
+          onClick={() => setShowAdvanced(!showAdvanced)}
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <svg className={`h-3 w-3 transition-transform ${showAdvanced ? "rotate-90" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 18l6-6-6-6" /></svg>
+          Advanced settings
+        </button>
+        <span className="text-border">|</span>
+        <button
+          type="button"
+          onClick={() => setShowCustomTag(!showCustomTag)}
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <svg className={`h-3 w-3 transition-transform ${showCustomTag ? "rotate-90" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M9 18l6-6-6-6" /></svg>
+          Custom tag
+        </button>
+      </div>
 
       {showAdvanced && (
         <div className="mb-4 grid grid-cols-3 gap-4">
@@ -115,20 +127,9 @@ export function ScanForm({ onScanCreated }: Props) {
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={() => setShowCustomTag(!showCustomTag)}
-        className="mb-4 text-sm text-muted-foreground hover:text-foreground"
-      >
-        {showCustomTag ? "Hide" : "Show"} custom tag
-      </button>
-
       {showCustomTag && (
-        <div className="mb-4 rounded-lg border bg-muted/30 p-4">
-          <p className="mb-3 text-xs text-muted-foreground">
-            Replace default Pharma tagging with custom keywords. Leave empty to use Pharma defaults.
-          </p>
-          <div className="mb-3">
+        <div className="mb-4 space-y-3">
+          <div>
             <label className="mb-1 block text-xs font-medium uppercase tracking-wider text-muted-foreground">
               Tag Name
             </label>
@@ -148,9 +149,12 @@ export function ScanForm({ onScanCreated }: Props) {
               value={tagKeywords}
               onChange={(e) => setTagKeywords(e.target.value)}
               placeholder={"cookie policy\nprivacy notice\nterms of use"}
-              rows={4}
+              rows={3}
               className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none ring-ring focus:ring-2"
             />
+            <p className="mt-1 text-xs text-muted-foreground">
+              Replaces default Pharma tagging. Leave empty for Pharma defaults.
+            </p>
           </div>
         </div>
       )}
