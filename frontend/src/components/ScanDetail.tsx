@@ -64,6 +64,33 @@ export function ScanDetail({ scanId, onBack }: Props) {
     });
   }, [data?.elements]);
 
+  // Drill-down data (must be before early returns to satisfy React rules of hooks)
+  const pageBreakdown = useMemo(() => {
+    if (!data?.elements) return [];
+    const map: Record<string, { title: string | null; count: number }> = {};
+    for (const el of data.elements) {
+      if (!map[el.page_url]) map[el.page_url] = { title: el.page_title, count: 0 };
+      map[el.page_url].count++;
+    }
+    return Object.entries(map)
+      .map(([url, { title, count }]) => ({ url, title, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [data?.elements]);
+
+  const tagBreakdown = useMemo(() => {
+    if (!data?.elements) return [];
+    const map: Record<string, number> = {};
+    for (const el of data.elements) {
+      if (el.pharma_context) {
+        const label = PHARMA_LABELS[el.pharma_context] || el.pharma_context;
+        map[label] = (map[label] || 0) + 1;
+      }
+    }
+    return Object.entries(map)
+      .map(([keyword, count]) => ({ keyword, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [data?.elements]);
+
   if (isLoading) {
     return (
       <div className="flex items-center gap-2 py-12 justify-center text-muted-foreground">
@@ -114,31 +141,6 @@ export function ScanDetail({ scanId, onBack }: Props) {
   // Get unique values for filters
   const types = Object.keys(summary.by_type);
   const containers = [...new Set(elements.map((e) => e.container_context))].sort();
-
-  // Drill-down data
-  const pageBreakdown = useMemo(() => {
-    const map: Record<string, { title: string | null; count: number }> = {};
-    for (const el of elements) {
-      if (!map[el.page_url]) map[el.page_url] = { title: el.page_title, count: 0 };
-      map[el.page_url].count++;
-    }
-    return Object.entries(map)
-      .map(([url, { title, count }]) => ({ url, title, count }))
-      .sort((a, b) => b.count - a.count);
-  }, [elements]);
-
-  const tagBreakdown = useMemo(() => {
-    const map: Record<string, number> = {};
-    for (const el of elements) {
-      if (el.pharma_context) {
-        const label = PHARMA_LABELS[el.pharma_context] || el.pharma_context;
-        map[label] = (map[label] || 0) + 1;
-      }
-    }
-    return Object.entries(map)
-      .map(([keyword, count]) => ({ keyword, count }))
-      .sort((a, b) => b.count - a.count);
-  }, [elements]);
 
   const handleSort = (key: SortKey) => {
     if (sortBy === key) {
