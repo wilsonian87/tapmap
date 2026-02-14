@@ -82,7 +82,12 @@ export function ScanDetail({ scanId, onBack }: Props) {
 
   if (!data) return null;
 
-  const { scan, elements, summary } = data;
+  const { scan, elements, summary: rawSummary } = data;
+  const summary = {
+    ...rawSummary,
+    tag_name: rawSummary.tag_name || "Pharma",
+    analytics_detected: rawSummary.analytics_detected || [],
+  };
   const isRunning = scan.scan_status === "running" || scan.scan_status === "pending";
 
   // Apply filters

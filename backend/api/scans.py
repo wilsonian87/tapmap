@@ -347,14 +347,15 @@ async def get_scan(
     else:
         element_list = all_elements
 
-    # Parse analytics JSON
-    analytics_raw = scan["analytics_detected"]
+    # Parse analytics JSON (defensive — column may not exist on old DBs)
+    scan_dict = dict(scan)
+    analytics_raw = scan_dict.get("analytics_detected")
     analytics_list = json.loads(analytics_raw) if analytics_raw else []
 
-    tag_name = scan["tag_name"] or "Pharma"
+    tag_name = scan_dict.get("tag_name") or "Pharma"
 
     return {
-        "scan": dict(scan),
+        "scan": scan_dict,
         "elements": element_list,
         "summary": {
             "total_elements": len(all_elements),
