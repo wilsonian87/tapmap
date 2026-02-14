@@ -193,6 +193,12 @@ class CrawlEngine:
     ) -> PageResult:
         """Visit a page, handle consent, extract elements, discover links."""
         page = await context.new_page()
+        # Initialize so partial failures still return what we have
+        title = None
+        status_code = None
+        elements = []
+        page_analytics = []
+
         try:
             response = await page.goto(
                 url,
@@ -252,6 +258,11 @@ class CrawlEngine:
                         self.consent_result.action,
                         self.consent_result.framework,
                     )
+                    # Let page settle after consent interaction
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:
+                        pass
 
             # Extract interactive elements
             elements = await extract_elements(
@@ -260,16 +271,20 @@ class CrawlEngine:
                 tag_keywords=self.config.tag_keywords,
             )
 
-            # Extract links and enqueue same-domain ones
-            if depth < self.config.max_depth:
-                links = await self._extract_links(page)
-                for link in links:
-                    norm = self._normalize_url(link)
-                    if (
-                        norm not in self.visited
-                        and self._is_crawlable(norm)
-                    ):
-                        await self.queue.put((norm, depth + 1))
+            # Extract links and enqueue same-domain ones (isolated so failures
+            # don't discard already-extracted elements)
+            try:
+                if depth < self.config.max_depth:
+                    links = await self._extract_links(page)
+                    for link in links:
+                        norm = self._normalize_url(link)
+                        if (
+                            norm not in self.visited
+                            and self._is_crawlable(norm)
+                        ):
+                            await self.queue.put((norm, depth + 1))
+            except Exception as e:
+                logger.warning("Link extraction failed on %s: %s", url, str(e))
 
             return PageResult(
                 url=url,
@@ -284,7 +299,11 @@ class CrawlEngine:
             logger.warning("Error visiting %s: %s", url, str(e))
             return PageResult(
                 url=url,
+                title=title,
                 depth=depth,
+                status_code=status_code,
+                elements=elements,
+                analytics=page_analytics,
                 error=str(e),
             )
         finally:

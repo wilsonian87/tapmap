@@ -397,7 +397,10 @@ async def extract_elements(
         return []
 
     results = []
-    page_title = await page.title() or None
+    try:
+        page_title = await page.title() or None
+    except Exception:
+        page_title = None
 
     for raw in raw_elements:
         # Detect tag context (pharma builtin or custom keywords)
