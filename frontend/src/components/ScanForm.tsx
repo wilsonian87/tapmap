@@ -22,13 +22,20 @@ export function ScanForm({ onScanCreated }: Props) {
     setError(null);
     setLoading(true);
 
+    // Auto-prepend https:// if no scheme provided
+    let normalizedUrl = url.trim();
+    if (normalizedUrl && !/^https?:\/\//i.test(normalizedUrl)) {
+      normalizedUrl = `https://${normalizedUrl}`;
+      setUrl(normalizedUrl);
+    }
+
     try {
       const keywords = tagKeywords
         .split("\n")
         .map((k) => k.trim())
         .filter(Boolean);
       const result = await createScan({
-        url,
+        url: normalizedUrl,
         max_pages: maxPages,
         max_depth: maxDepth,
         rate_limit: rateLimit,
