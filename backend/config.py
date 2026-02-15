@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     scan_timeout_seconds: int = 900
     user_agent: str = "TapMapper/1.0 (pharma site audit tool)"
 
+    # AI Classification
+    anthropic_api_key: str = ""
+
     # Admin
     admin_username: str = ""
 

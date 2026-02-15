@@ -1,7 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
-import { getScan, getExportUrl } from "../lib/api";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { getScan, getExportUrl, startClassification, getClassificationStatus, manualClassify } from "../lib/api";
 import type { ScanElement } from "../lib/api";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import Fuse from "fuse.js";
 import { DrillDownOverlay } from "./DrillDownOverlay";
 
@@ -37,7 +37,25 @@ const PHARMA_LABELS: Record<string, string> = {
   patient_enrollment: "Patient Enrollment",
   hcp_gate: "HCP Gate",
   fair_balance: "Fair Balance",
+  custom: "Custom Tag",
 };
+
+const PHARMA_TAG_COLORS: Record<string, string> = {
+  isi: "bg-amber-100 text-amber-700",
+  adverse_event: "bg-red-100 text-red-700",
+  patient_enrollment: "bg-green-100 text-green-700",
+  hcp_gate: "bg-purple-100 text-purple-700",
+  fair_balance: "bg-blue-100 text-blue-700",
+  custom: "bg-amber-100 text-amber-700",
+};
+
+/** Parse "category:keyword" pharma_context into parts. */
+function parsePharmaContext(ctx: string | null): { category: string; keyword: string | null } | null {
+  if (!ctx) return null;
+  const idx = ctx.indexOf(":");
+  if (idx === -1) return { category: ctx, keyword: null };
+  return { category: ctx.substring(0, idx), keyword: ctx.substring(idx + 1) };
+}
 
 type SortKey = "element_type" | "element_text" | "container_context" | "section_context" | "page_url" | "pharma_context";
 type SortDir = "asc" | "desc";
@@ -51,18 +69,52 @@ export function ScanDetail({ scanId, onBack }: Props) {
   const [dedupEnabled, setDedupEnabled] = useState(false);
   const [sortBy, setSortBy] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [hideTypes, setHideTypes] = useState<string[]>([]);
   const [pagesDrillDown, setPagesDrillDown] = useState(false);
   const [tagDrillDown, setTagDrillDown] = useState(false);
+  const [elementsDrillDown, setElementsDrillDown] = useState(false);
+  const [classifying, setClassifying] = useState(false);
+  const queryClient = useQueryClient();
   const PAGE_SIZE = 200;
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ["scan", scanId, dedupEnabled],
-    queryFn: () => getScan(scanId, dedupEnabled ? { dedup: true } : undefined),
+    queryKey: ["scan", scanId, dedupEnabled, hideTypes.join(",")],
+    queryFn: () => getScan(scanId, {
+      ...(dedupEnabled && { dedup: true }),
+      ...(hideTypes.length > 0 && { hide_types: hideTypes.join(",") }),
+    }),
     refetchInterval: (query) => {
       const status = query.state.data?.scan?.scan_status;
       return status === "running" || status === "pending" ? 2000 : false;
     },
   });
+
+  const { data: classifyStatus } = useQuery({
+    queryKey: ["classify-status", scanId],
+    queryFn: () => getClassificationStatus(scanId),
+    refetchInterval: (query) => {
+      const status = query.state.data;
+      if (classifying && status && !status.is_running && status.classified > 0) {
+        // Classification just finished — trigger refresh
+        setTimeout(() => {
+          setClassifying(false);
+          queryClient.invalidateQueries({ queryKey: ["scan", scanId] });
+        }, 0);
+        return false;
+      }
+      return classifying ? 2000 : false;
+    },
+    enabled: !isLoading,
+  });
+
+  const handleClassify = useCallback(async () => {
+    try {
+      setClassifying(true);
+      await startClassification(scanId);
+    } catch {
+      setClassifying(false);
+    }
+  }, [scanId]);
 
   // Fuse.js index for fuzzy search
   const fuse = useMemo(() => {
@@ -89,15 +141,39 @@ export function ScanDetail({ scanId, onBack }: Props) {
 
   const tagBreakdown = useMemo(() => {
     if (!data?.elements) return [];
-    const map: Record<string, number> = {};
+    const catMap: Record<string, { count: number; keywords: Record<string, number> }> = {};
     for (const el of data.elements) {
       if (el.pharma_context) {
-        const label = PHARMA_LABELS[el.pharma_context] || el.pharma_context;
-        map[label] = (map[label] || 0) + 1;
+        const parsed = parsePharmaContext(el.pharma_context);
+        if (!parsed) continue;
+        const catLabel = PHARMA_LABELS[parsed.category] || parsed.category;
+        if (!catMap[catLabel]) catMap[catLabel] = { count: 0, keywords: {} };
+        catMap[catLabel].count++;
+        if (parsed.keyword) {
+          catMap[catLabel].keywords[parsed.keyword] = (catMap[catLabel].keywords[parsed.keyword] || 0) + 1;
+        }
       }
     }
+    return Object.entries(catMap)
+      .map(([category, { count, keywords }]) => ({
+        category,
+        count,
+        keywords: Object.entries(keywords)
+          .map(([kw, c]) => ({ keyword: kw, count: c }))
+          .sort((a, b) => b.count - a.count),
+      }))
+      .sort((a, b) => b.count - a.count);
+  }, [data?.elements]);
+
+  const containerBreakdown = useMemo(() => {
+    if (!data?.elements) return [];
+    const map: Record<string, number> = {};
+    for (const el of data.elements) {
+      const c = el.container_context || "unknown";
+      map[c] = (map[c] || 0) + 1;
+    }
     return Object.entries(map)
-      .map(([keyword, count]) => ({ keyword, count }))
+      .map(([container, count]) => ({ container, count }))
       .sort((a, b) => b.count - a.count);
   }, [data?.elements]);
 
@@ -126,6 +202,7 @@ export function ScanDetail({ scanId, onBack }: Props) {
     analytics_detected: rawSummary.analytics_detected || [],
   };
   const isRunning = scan.scan_status === "running" || scan.scan_status === "pending";
+  const hasAnyTier = elements.some((e) => e.value_tier);
 
   // Apply filters
   let filtered = elements;
@@ -182,6 +259,20 @@ export function ScanDetail({ scanId, onBack }: Props) {
         </div>
         {!isRunning && elements.length > 0 && (
           <div className="flex gap-2 shrink-0">
+            {!classifying && (!classifyStatus || classifyStatus.classified < classifyStatus.total) && (
+              <button
+                onClick={handleClassify}
+                className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[13px] font-medium text-amber-700 hover:bg-amber-100"
+              >
+                Classify with AI
+              </button>
+            )}
+            {classifying && classifyStatus && (
+              <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[13px] font-medium text-amber-700">
+                <Spinner />
+                <span>{classifyStatus.progress}%</span>
+              </div>
+            )}
             <a
               href={getExportUrl(scanId, "xlsx", dedupEnabled)}
               className="rounded-lg bg-primary px-3 py-2 text-[13px] font-medium text-primary-foreground hover:bg-primary/90"
@@ -230,7 +321,11 @@ export function ScanDetail({ scanId, onBack }: Props) {
             value={String(scan.pages_scanned || 0)}
             onClick={() => setPagesDrillDown(true)}
           />
-          <MetricCard label="Elements" value={String(summary.total_elements)} />
+          <MetricCard
+            label="Elements"
+            value={String(summary.total_elements)}
+            onClick={summary.total_elements > 0 ? () => setElementsDrillDown(true) : undefined}
+          />
           <MetricCard
             label={`${summary.tag_name} Flagged`}
             value={String(summary.pharma_flagged)}
@@ -357,6 +452,65 @@ export function ScanDetail({ scanId, onBack }: Props) {
         </div>
       )}
 
+      {/* Filtering presets */}
+      {!isRunning && summary.total_elements > 0 && (
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          <span className="text-xs text-muted-foreground self-center mr-1">Filter:</span>
+          <button
+            onClick={() => setHideTypes(hideTypes.includes("link") ? [] : ["link"])}
+            className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
+              hideTypes.includes("link") ? "bg-primary text-primary-foreground" : "hover:bg-muted"
+            }`}
+          >
+            Hide Nav Links
+          </button>
+          <button
+            onClick={() => {
+              const contentTypes = ["link", "menu", "tab"];
+              const isActive = contentTypes.every((t) => hideTypes.includes(t));
+              setHideTypes(isActive ? [] : contentTypes);
+            }}
+            className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
+              ["link", "menu", "tab"].every((t) => hideTypes.includes(t))
+                ? "bg-primary text-primary-foreground"
+                : "hover:bg-muted"
+            }`}
+          >
+            Content Only
+          </button>
+          <button
+            onClick={() => {
+              const isActive = dedupEnabled && hideTypes.length > 0 && containerFilter !== null;
+              if (isActive) {
+                setDedupEnabled(false);
+                setHideTypes([]);
+                setContainerFilter(null);
+              } else {
+                setDedupEnabled(true);
+                setHideTypes(["link"]);
+                setContainerFilter("main");
+                setShowAll(false);
+              }
+            }}
+            className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
+              dedupEnabled && hideTypes.includes("link") && containerFilter === "main"
+                ? "bg-primary text-primary-foreground"
+                : "hover:bg-muted"
+            }`}
+          >
+            Smart Globals
+          </button>
+          {hideTypes.length > 0 && (
+            <button
+              onClick={() => setHideTypes([])}
+              className="rounded-lg border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Filters row */}
       {!isRunning && summary.total_elements > 0 && (
         <div className="mb-3 flex gap-2">
@@ -416,11 +570,14 @@ export function ScanDetail({ scanId, onBack }: Props) {
                     <th className="px-3 py-2 cursor-pointer select-none" onClick={() => handleSort("pharma_context")}>
                       {summary.tag_name}<SortArrow col="pharma_context" />
                     </th>
+                    {hasAnyTier && (
+                      <th className="px-3 py-2">Value</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
                   {displayElements.map((el, i) => (
-                    <ElementRow key={i} element={el} />
+                    <ElementRow key={i} element={el} showTier={hasAnyTier} scanId={scanId} />
                   ))}
                 </tbody>
               </table>
@@ -483,18 +640,82 @@ export function ScanDetail({ scanId, onBack }: Props) {
       {/* Tag drill-down overlay */}
       {tagDrillDown && (
         <DrillDownOverlay title={`${summary.tag_name} Breakdown`} onClose={() => setTagDrillDown(false)}>
-          <div className="space-y-2">
-            {tagBreakdown.map((t) => (
-              <div key={t.keyword} className="flex items-center justify-between gap-3">
-                <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-700">
-                  {t.keyword}
-                </span>
-                <span className="text-[13px] font-medium">{t.count} elements</span>
-              </div>
-            ))}
+          <div className="space-y-3">
+            {tagBreakdown.map((t) => {
+              const catKey = Object.entries(PHARMA_LABELS).find(([, v]) => v === t.category)?.[0] || "custom";
+              const colorClass = PHARMA_TAG_COLORS[catKey] || "bg-amber-100 text-amber-700";
+              return (
+                <div key={t.category}>
+                  <div className="flex items-center justify-between gap-3 mb-1">
+                    <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${colorClass}`}>
+                      {t.category}
+                    </span>
+                    <span className="text-[13px] font-medium">{t.count} elements</span>
+                  </div>
+                  {t.keywords.length > 0 && (
+                    <div className="ml-4 space-y-0.5">
+                      {t.keywords.map((kw) => (
+                        <div key={kw.keyword} className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span className="italic">{kw.keyword}</span>
+                          <span>{kw.count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
             {tagBreakdown.length === 0 && (
               <p className="text-sm text-muted-foreground">No tagged elements found.</p>
             )}
+          </div>
+        </DrillDownOverlay>
+      )}
+
+      {/* Elements drill-down overlay */}
+      {elementsDrillDown && (
+        <DrillDownOverlay title="Elements Breakdown" onClose={() => setElementsDrillDown(false)}>
+          <div className="space-y-4">
+            <div>
+              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">By Type</h4>
+              <div className="space-y-1.5">
+                {types.map((type) => (
+                  <div key={type} className="flex items-center justify-between gap-3">
+                    <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${TYPE_COLORS[type] || TYPE_COLORS.unknown}`}>
+                      {type}
+                    </span>
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary/60"
+                          style={{ width: `${(summary.by_type[type] / summary.total_elements) * 100}%` }}
+                        />
+                      </div>
+                      <span className="text-[13px] font-medium shrink-0 w-12 text-right">{summary.by_type[type]}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h4 className="text-xs font-medium uppercase tracking-wider text-muted-foreground mb-2">By Container</h4>
+              <div className="space-y-1.5">
+                {containerBreakdown.map((c) => (
+                  <div key={c.container} className="flex items-center justify-between gap-3">
+                    <span className="text-[13px] font-medium min-w-[80px]">{c.container}</span>
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-primary/40"
+                          style={{ width: `${(c.count / summary.total_elements) * 100}%` }}
+                        />
+                      </div>
+                      <span className="text-[13px] font-medium shrink-0 w-12 text-right">{c.count}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </DrillDownOverlay>
       )}
@@ -502,8 +723,26 @@ export function ScanDetail({ scanId, onBack }: Props) {
   );
 }
 
-function ElementRow({ element: el }: { element: ScanElement }) {
+function ElementRow({ element: el, showTier, scanId }: { element: ScanElement; showTier: boolean; scanId: string }) {
   const [expanded, setExpanded] = useState(false);
+  const queryClient = useQueryClient();
+
+  const tierColors: Record<string, string> = {
+    HVA: "bg-green-100 text-green-700",
+    MVA: "bg-amber-100 text-amber-700",
+    LVA: "bg-gray-100 text-gray-600",
+  };
+
+  const handleTierChange = async (newTier: string) => {
+    try {
+      await manualClassify(scanId, el.id, newTier);
+      queryClient.invalidateQueries({ queryKey: ["scan", scanId] });
+    } catch {
+      // silently fail — user can retry
+    }
+  };
+
+  const colSpan = showTier ? 7 : 6;
 
   return (
     <>
@@ -536,16 +775,31 @@ function ElementRow({ element: el }: { element: ScanElement }) {
           {el.page_title || toRelativePath(el.page_url)}
         </td>
         <td className="px-3 py-2">
-          {el.pharma_context && (
-            <span className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
-              {PHARMA_LABELS[el.pharma_context] || el.pharma_context}
-            </span>
-          )}
+          {el.pharma_context && (() => {
+            const parsed = parsePharmaContext(el.pharma_context);
+            if (!parsed) return null;
+            const colorClass = PHARMA_TAG_COLORS[parsed.category] || "bg-amber-100 text-amber-700";
+            const label = PHARMA_LABELS[parsed.category] || parsed.category;
+            return (
+              <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${colorClass}`}>
+                {label}
+              </span>
+            );
+          })()}
         </td>
+        {showTier && (
+          <td className="px-3 py-2">
+            {el.value_tier && (
+              <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${tierColors[el.value_tier] || "bg-gray-100 text-gray-600"}`}>
+                {el.value_tier}
+              </span>
+            )}
+          </td>
+        )}
       </tr>
       {expanded && (
         <tr className="border-b bg-muted/20">
-          <td colSpan={6} className="px-3 py-2.5">
+          <td colSpan={colSpan} className="px-3 py-2.5">
             <div className="grid grid-cols-2 gap-2.5 text-xs">
               <div>
                 <span className="font-medium text-muted-foreground">CSS Selector:</span>
@@ -572,6 +826,41 @@ function ElementRow({ element: el }: { element: ScanElement }) {
                 <span className="font-medium text-muted-foreground">Above Fold:</span>
                 <span className="ml-1">{el.is_above_fold ? "Yes" : "No"}</span>
               </div>
+              {el.pharma_context && (() => {
+                const parsed = parsePharmaContext(el.pharma_context);
+                if (!parsed?.keyword) return null;
+                return (
+                  <div>
+                    <span className="font-medium text-muted-foreground">Matched Keyword:</span>
+                    <span className="ml-1 italic">{parsed.keyword}</span>
+                  </div>
+                );
+              })()}
+              {el.value_reason && (
+                <div className="col-span-2">
+                  <span className="font-medium text-muted-foreground">AI Reason:</span>
+                  <span className="ml-1">{el.value_reason}</span>
+                </div>
+              )}
+              {showTier && (
+                <div>
+                  <span className="font-medium text-muted-foreground">Value Tier:</span>
+                  <select
+                    value={el.value_tier || ""}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      if (e.target.value) handleTierChange(e.target.value);
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="ml-1 rounded border bg-background px-1.5 py-0.5 text-xs"
+                  >
+                    <option value="">Unclassified</option>
+                    <option value="HVA">HVA</option>
+                    <option value="MVA">MVA</option>
+                    <option value="LVA">LVA</option>
+                  </select>
+                </div>
+              )}
               {el.page_urls && (
                 <div className="col-span-2">
                   <span className="font-medium text-muted-foreground">Seen on pages:</span>

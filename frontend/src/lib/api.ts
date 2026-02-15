@@ -63,6 +63,7 @@ export interface ScanSummary {
 }
 
 export interface ScanElement {
+  id: number;
   page_url: string;
   page_title: string | null;
   element_type: string;
@@ -76,6 +77,8 @@ export interface ScanElement {
   is_external: number;
   pharma_context: string | null;
   notes: string | null;
+  value_tier: string | null;
+  value_reason: string | null;
   page_count?: number;
   page_urls?: string;
 }
@@ -111,10 +114,89 @@ export function getScan(scanId: string, params?: { dedup?: boolean; hide_types?:
   return request<ScanDetail>(`/scans/${scanId}${qs ? `?${qs}` : ""}`);
 }
 
+// Domain history
+export interface DomainScanHistory {
+  scan_id: string;
+  domain: string;
+  scan_url: string;
+  scan_status: string;
+  pages_scanned: number;
+  total_pages: number | null;
+  crawl_date: string;
+  duration_seconds: number | null;
+  element_count: number;
+  pharma_count: number;
+}
+
+export function getDomainScans(domain: string) {
+  return request<DomainScanHistory[]>(`/scans/domain/${encodeURIComponent(domain)}`);
+}
+
+// Scan Diffing
+export interface DiffElement {
+  element_type: string;
+  element_text: string | null;
+  css_selector: string | null;
+  target_url: string | null;
+  container_context: string;
+  section_context: string | null;
+  page_url: string;
+  pharma_context: string | null;
+  is_above_fold: number;
+  is_external: number;
+  action_type: string | null;
+}
+
+export interface ScanDiffResult {
+  scan_a: string;
+  scan_b: string;
+  added: DiffElement[];
+  removed: DiffElement[];
+  unchanged: DiffElement[];
+  summary: {
+    added_count: number;
+    removed_count: number;
+    unchanged_count: number;
+  };
+}
+
+export function diffScans(scanA: string, scanB: string) {
+  return request<ScanDiffResult>(`/scans/diff?scan_a=${encodeURIComponent(scanA)}&scan_b=${encodeURIComponent(scanB)}`);
+}
+
 // Exports
 export function getExportUrl(scanId: string, format: "xlsx" | "csv", dedup?: boolean) {
   const base = `${BASE}/exports/${scanId}/${format}`;
   return dedup ? `${base}?dedup=true` : base;
+}
+
+// Classification
+export interface ClassificationStatus {
+  scan_id: string;
+  total: number;
+  classified: number;
+  is_running: boolean;
+  progress: number;
+}
+
+export function startClassification(scanId: string) {
+  return request<{ status: string; scan_id: string }>(`/scans/${scanId}/classify`, {
+    method: "POST",
+  });
+}
+
+export function getClassificationStatus(scanId: string) {
+  return request<ClassificationStatus>(`/scans/${scanId}/classify/status`);
+}
+
+export function manualClassify(scanId: string, elementId: number, valueTier: string, valueReason?: string) {
+  return request<{ status: string; element_id: number; value_tier: string }>(
+    `/scans/${scanId}/elements/${elementId}/classify`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ value_tier: valueTier, value_reason: valueReason || "" }),
+    }
+  );
 }
 
 // Admin

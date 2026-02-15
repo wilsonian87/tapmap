@@ -55,21 +55,28 @@ PHARMA_PATTERNS = {
 
 
 def _detect_pharma_builtin(text: str | None, url: str | None = None) -> str | None:
-    """Check element text/URL against built-in pharma patterns (V1 behavior)."""
+    """Check element text/URL against built-in pharma patterns (V1 behavior).
+
+    Returns 'category:matched_keyword' format (e.g. 'isi:prescribing information').
+    """
     if not text:
-        return None
-    text_lower = text.lower()
-    for category, patterns in PHARMA_PATTERNS.items():
-        for pattern in patterns:
-            if pattern in text_lower:
-                return category
+        text_lower = ""
+    else:
+        text_lower = text.lower()
+
+    if text_lower:
+        for category, patterns in PHARMA_PATTERNS.items():
+            for pattern in patterns:
+                if pattern in text_lower:
+                    return f"{category}:{pattern}"
+
     # URL-based detection for downloads
     if url:
         url_lower = url.lower()
         if "prescribing" in url_lower or "/pi" in url_lower:
-            return "isi"
+            return "isi:prescribing information"
         if "medguide" in url_lower or "medication-guide" in url_lower:
-            return "isi"
+            return "isi:medication guide"
     return None
 
 
@@ -101,7 +108,7 @@ def detect_tag_context(
 
     for keyword in keywords:
         if keyword.lower() in combined:
-            return keyword
+            return f"custom:{keyword}"
     return None
 
 

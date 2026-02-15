@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { LoginForm } from "./components/LoginForm";
 import { ScanForm } from "./components/ScanForm";
 import { ScanDetail } from "./components/ScanDetail";
+import { DomainHistory } from "./components/DomainHistory";
+import { ScanDiff } from "./components/ScanDiff";
 import { AdminPanel } from "./components/AdminPanel";
 import { getMe, logout, listScans } from "./lib/api";
 
@@ -10,7 +12,12 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1 } },
 });
 
-type View = { page: "scans" } | { page: "scan-detail"; scanId: string } | { page: "admin" };
+type View =
+  | { page: "scans" }
+  | { page: "scan-detail"; scanId: string }
+  | { page: "domain-history"; domain: string }
+  | { page: "diff"; scanA: string; scanB: string }
+  | { page: "admin" };
 
 function Dashboard() {
   const [view, setView] = useState<View>({ page: "scans" });
@@ -52,6 +59,57 @@ function Dashboard() {
   // Admin panel
   if (view.page === "admin") {
     return <AdminPanel onBack={() => setView({ page: "scans" })} />;
+  }
+
+  // Domain history view
+  if (view.page === "domain-history") {
+    return (
+      <div className="mx-auto max-w-6xl p-6 sm:p-8">
+        <header className="mb-6 flex items-center justify-between">
+          <img src="/logo.png" alt="TapMapper" className="h-8" />
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-muted-foreground">{user?.username}</span>
+            <button
+              onClick={handleLogout}
+              className="rounded-lg border px-3 py-1.5 text-sm hover:bg-muted"
+            >
+              Sign out
+            </button>
+          </div>
+        </header>
+        <DomainHistory
+          domain={view.domain}
+          onBack={() => setView({ page: "scans" })}
+          onSelectScan={(scanId) => setView({ page: "scan-detail", scanId })}
+          onCompare={(scanA, scanB) => setView({ page: "diff", scanA, scanB })}
+        />
+      </div>
+    );
+  }
+
+  // Scan diff view
+  if (view.page === "diff") {
+    return (
+      <div className="mx-auto max-w-6xl p-6 sm:p-8">
+        <header className="mb-6 flex items-center justify-between">
+          <img src="/logo.png" alt="TapMapper" className="h-8" />
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-muted-foreground">{user?.username}</span>
+            <button
+              onClick={handleLogout}
+              className="rounded-lg border px-3 py-1.5 text-sm hover:bg-muted"
+            >
+              Sign out
+            </button>
+          </div>
+        </header>
+        <ScanDiff
+          scanA={view.scanA}
+          scanB={view.scanB}
+          onBack={() => setView({ page: "scans" })}
+        />
+      </div>
+    );
   }
 
   // Scan detail view
@@ -151,7 +209,15 @@ function Dashboard() {
                     onClick={() => setView({ page: "scan-detail", scanId: scan.scan_id })}
                   >
                     <td className="px-4 py-3 font-medium max-w-[200px] truncate">
-                      {scan.domain}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setView({ page: "domain-history", domain: scan.domain });
+                        }}
+                        className="text-primary hover:underline"
+                      >
+                        {scan.domain}
+                      </button>
                     </td>
                     <td className="px-4 py-3">
                       <span

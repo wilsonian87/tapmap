@@ -276,6 +276,103 @@ async def list_scans(
     return [dict(row) for row in rows]
 
 
+@router.get("/domain/{domain}")
+async def get_domain_scans(
+    domain: str,
+    user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get all scans for a specific domain, with element/pharma counts."""
+    cursor = await db.execute(
+        """SELECT
+              s.scan_id, s.domain, s.scan_url, s.scan_status,
+              s.pages_scanned, s.total_pages, s.crawl_date,
+              s.duration_seconds,
+              COUNT(e.id) as element_count,
+              SUM(CASE WHEN e.pharma_context IS NOT NULL AND e.pharma_context != '' THEN 1 ELSE 0 END) as pharma_count
+           FROM scans s
+           LEFT JOIN elements e ON e.scan_id = s.scan_id
+           WHERE s.domain = ? AND s.created_by = ?
+           GROUP BY s.scan_id
+           ORDER BY s.crawl_date DESC""",
+        (domain, user["username"]),
+    )
+    rows = await cursor.fetchall()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No scans found for this domain")
+    return [dict(row) for row in rows]
+
+
+@router.get("/diff")
+async def diff_scans(
+    scan_a: str = Query(...),
+    scan_b: str = Query(...),
+    user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Compare two scans, returning added/removed/unchanged elements."""
+    # Verify user owns both scans
+    for sid in (scan_a, scan_b):
+        cursor = await db.execute(
+            "SELECT scan_id FROM scans WHERE scan_id = ? AND created_by = ?",
+            (sid, user["username"]),
+        )
+        if not await cursor.fetchone():
+            raise HTTPException(status_code=404, detail=f"Scan not found: {sid}")
+
+    async def fetch_elements(scan_id: str) -> list[dict]:
+        cursor = await db.execute(
+            """SELECT element_type, element_text, css_selector, target_url,
+                      container_context, section_context, page_url,
+                      pharma_context, is_above_fold, is_external, action_type
+               FROM elements WHERE scan_id = ?""",
+            (scan_id,),
+        )
+        return [dict(row) for row in await cursor.fetchall()]
+
+    els_a = await fetch_elements(scan_a)
+    els_b = await fetch_elements(scan_b)
+
+    def element_key(el: dict) -> tuple:
+        return (
+            el.get("element_text") or "",
+            el.get("css_selector") or "",
+            el.get("target_url") or "",
+        )
+
+    keys_a = {}
+    for el in els_a:
+        k = element_key(el)
+        if k not in keys_a:
+            keys_a[k] = el
+
+    keys_b = {}
+    for el in els_b:
+        k = element_key(el)
+        if k not in keys_b:
+            keys_b[k] = el
+
+    set_a = set(keys_a.keys())
+    set_b = set(keys_b.keys())
+
+    added = [keys_b[k] for k in (set_b - set_a)]
+    removed = [keys_a[k] for k in (set_a - set_b)]
+    unchanged = [keys_b[k] for k in (set_a & set_b)]
+
+    return {
+        "scan_a": scan_a,
+        "scan_b": scan_b,
+        "added": added,
+        "removed": removed,
+        "unchanged": unchanged,
+        "summary": {
+            "added_count": len(added),
+            "removed_count": len(removed),
+            "unchanged_count": len(unchanged),
+        },
+    }
+
+
 @router.get("/{scan_id}")
 async def get_scan(
     scan_id: str,
@@ -307,6 +404,7 @@ async def get_scan(
         # Deduplicated query: GROUP BY key fields
         cursor = await db.execute(
             """SELECT
+                  MIN(id) as id,
                   MIN(page_url) as page_url,
                   MIN(page_title) as page_title,
                   element_type, action_type,
@@ -317,6 +415,8 @@ async def get_scan(
                   MAX(is_external) as is_external,
                   MIN(pharma_context) as pharma_context,
                   MIN(notes) as notes,
+                  MIN(value_tier) as value_tier,
+                  MIN(value_reason) as value_reason,
                   COUNT(*) as page_count,
                   GROUP_CONCAT(DISTINCT page_url) as page_urls
                FROM elements WHERE scan_id = ?
@@ -326,10 +426,11 @@ async def get_scan(
         )
     else:
         cursor = await db.execute(
-            """SELECT page_url, page_title, element_type, action_type,
+            """SELECT id, page_url, page_title, element_type, action_type,
                       element_text, css_selector, section_context,
                       container_context, is_above_fold, target_url,
-                      is_external, pharma_context, notes
+                      is_external, pharma_context, notes,
+                      value_tier, value_reason
                FROM elements WHERE scan_id = ?
                ORDER BY id""",
             (scan_id,),

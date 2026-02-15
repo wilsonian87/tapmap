@@ -12,6 +12,7 @@ from auth.routes import router as auth_router
 from api.scans import router as scans_router
 from api.exports import router as exports_router
 from api.admin import router as admin_router, auto_purge_loop
+from api.classify import router as classify_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,6 +54,7 @@ app.include_router(auth_router)
 app.include_router(scans_router)
 app.include_router(exports_router)
 app.include_router(admin_router)
+app.include_router(classify_router)
 
 
 @app.get("/api/health")
