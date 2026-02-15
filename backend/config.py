@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     rate_limit_default: float = 1.0
     rate_limit_floor: float = 0.5
     scan_timeout_seconds: int = 900
-    user_agent: str = "TapMap/1.0 (internal pharma audit tool)"
+    user_agent: str = "TapMapper/1.0 (pharma site audit tool)"
 
     # Admin
     admin_username: str = ""

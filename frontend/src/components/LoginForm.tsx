@@ -31,10 +31,7 @@ export function LoginForm({ onAuth }: Props) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-muted/30">
       <div className="w-full max-w-sm rounded-xl border bg-card p-8 shadow-sm">
-        <h1 className="mb-1 text-2xl font-bold tracking-tight">TapMap</h1>
-        <p className="mb-6 text-sm text-muted-foreground">
-          Pharma site interaction discovery
-        </p>
+        <img src="/logo.png" alt="TapMapper" className="mb-6 h-10" />
 
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>

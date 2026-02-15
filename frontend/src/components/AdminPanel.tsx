@@ -37,7 +37,7 @@ export function AdminPanel({ onBack }: Props) {
         >
           &larr; Back
         </button>
-        <h1 className="text-xl font-bold tracking-tight">Admin Panel</h1>
+        <h1 className="text-xl font-bold tracking-tight">TapMapper Admin</h1>
       </div>
 
       <div className="mb-6 flex gap-1 rounded-lg border bg-muted/50 p-1">

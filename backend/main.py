@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     await init_db()
-    logger.info("TapMap ready.")
+    logger.info("TapMapper ready.")
     purge_task = asyncio.create_task(auto_purge_loop())
     yield
     purge_task.cancel()
@@ -32,7 +32,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="TapMap",
+    title="TapMapper",
     description="Pharma website interaction discovery tool",
     version="0.1.0",
     lifespan=lifespan,
@@ -57,7 +57,7 @@ app.include_router(admin_router)
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "service": "tapmap"}
+    return {"status": "ok", "service": "tapmapper"}
 
 
 # Serve frontend static files in production (must be last — catch-all mount)

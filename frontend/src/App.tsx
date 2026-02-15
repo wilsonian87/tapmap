@@ -59,7 +59,7 @@ function Dashboard() {
     return (
       <div className="mx-auto max-w-6xl p-6 sm:p-8">
         <header className="mb-6 flex items-center justify-between">
-          <h1 className="text-xl font-bold tracking-tight">TapMap</h1>
+          <img src="/logo.png" alt="TapMapper" className="h-8" />
           <div className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">{user?.username}</span>
             <button
@@ -83,10 +83,7 @@ function Dashboard() {
     <div className="mx-auto max-w-4xl p-6 sm:p-8">
       <header className="mb-8 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">TapMap</h1>
-          <p className="text-sm text-muted-foreground">
-            Pharma site interaction discovery
-          </p>
+          <img src="/logo.png" alt="TapMapper" className="h-10" />
         </div>
         <div className="flex items-center gap-4">
           {user?.is_admin && (
