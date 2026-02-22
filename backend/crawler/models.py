@@ -58,8 +58,10 @@ class CrawlProgress(BaseModel):
     scan_id: str
     pages_scanned: int = 0
     total_pages_found: int = 0
+    total_elements: int = 0
     current_url: Optional[str] = None
     status: str = "running"
+    elapsed_seconds: float = 0.0
 
 
 class RobotsResult(BaseModel):

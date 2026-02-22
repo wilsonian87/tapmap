@@ -114,6 +114,21 @@ export function getScan(scanId: string, params?: { dedup?: boolean; hide_types?:
   return request<ScanDetail>(`/scans/${scanId}${qs ? `?${qs}` : ""}`);
 }
 
+// Scan progress (live polling)
+export interface ScanProgress {
+  pages_scanned: number;
+  total_pages_found: number;
+  total_elements: number;
+  current_url: string | null;
+  status: string;
+  elapsed_seconds: number | null;
+  config_max_pages: number;
+}
+
+export function getScanProgress(scanId: string) {
+  return request<ScanProgress>(`/scans/${scanId}/progress`);
+}
+
 // Domain history
 export interface DomainScanHistory {
   scan_id: string;

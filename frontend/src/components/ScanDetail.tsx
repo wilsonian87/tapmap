@@ -1,9 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getScan, getExportUrl, startClassification, getClassificationStatus, manualClassify } from "../lib/api";
+import { getScan, getScanProgress, getExportUrl, startClassification, getClassificationStatus, manualClassify } from "../lib/api";
 import type { ScanElement } from "../lib/api";
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import Fuse from "fuse.js";
 import { DrillDownOverlay } from "./DrillDownOverlay";
+import { ElementTypeIcon } from "./ElementTypeIcon";
 
 interface Props {
   scanId: string;
@@ -57,25 +58,76 @@ function parsePharmaContext(ctx: string | null): { category: string; keyword: st
   return { category: ctx.substring(0, idx), keyword: ctx.substring(idx + 1) };
 }
 
-type SortKey = "element_type" | "element_text" | "container_context" | "section_context" | "page_url" | "pharma_context";
+type SortKey = "element_type" | "element_text" | "action_type" | "section_context" | "page_url" | "pharma_context";
 type SortDir = "asc" | "desc";
+type GroupBy = "flat" | "page" | "type";
+
+/** Read filter state from URL search params */
+function readFiltersFromUrl() {
+  const p = new URLSearchParams(window.location.search);
+  return {
+    activeTypes: p.get("types")?.split(",").filter(Boolean) ?? null,
+    activeContainers: p.get("containers")?.split(",").filter(Boolean) ?? null,
+    pharmaOnly: p.get("pharma") === "1",
+    searchText: p.get("q") ?? "",
+    dedup: p.get("dedup") === "1",
+    hideTypes: p.get("hide")?.split(",").filter(Boolean) ?? [],
+    groupBy: (p.get("group") as GroupBy) || "flat",
+    sortBy: (p.get("sort") as SortKey) || null,
+    sortDir: (p.get("dir") as SortDir) || "asc",
+  };
+}
+
+/** Sync filter state to URL search params (replace, no navigation) */
+function syncFiltersToUrl(state: {
+  activeTypes: string[] | null;
+  activeContainers: string[] | null;
+  pharmaOnly: boolean;
+  searchText: string;
+  dedup: boolean;
+  hideTypes: string[];
+  groupBy: GroupBy;
+  sortBy: SortKey | null;
+  sortDir: SortDir;
+}) {
+  const p = new URLSearchParams(window.location.search);
+  // Preserve scanId param if present
+  const setOrDel = (key: string, val: string | null) => {
+    if (val) p.set(key, val); else p.delete(key);
+  };
+  setOrDel("types", state.activeTypes?.join(",") || null);
+  setOrDel("containers", state.activeContainers?.join(",") || null);
+  setOrDel("pharma", state.pharmaOnly ? "1" : null);
+  setOrDel("q", state.searchText || null);
+  setOrDel("dedup", state.dedup ? "1" : null);
+  setOrDel("hide", state.hideTypes.length ? state.hideTypes.join(",") : null);
+  setOrDel("group", state.groupBy !== "flat" ? state.groupBy : null);
+  setOrDel("sort", state.sortBy || null);
+  setOrDel("dir", state.sortDir !== "asc" ? state.sortDir : null);
+  const qs = p.toString();
+  const newUrl = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+  window.history.replaceState(null, "", newUrl);
+}
 
 export function ScanDetail({ scanId, onBack }: Props) {
-  const [typeFilter, setTypeFilter] = useState<string | null>(null);
-  const [containerFilter, setContainerFilter] = useState<string | null>(null);
-  const [pharmaOnly, setPharmaOnly] = useState(false);
-  const [searchText, setSearchText] = useState("");
-  const [showAll, setShowAll] = useState(false);
-  const [dedupEnabled, setDedupEnabled] = useState(false);
-  const [sortBy, setSortBy] = useState<SortKey | null>(null);
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
-  const [hideTypes, setHideTypes] = useState<string[]>([]);
+  // Initialize from URL params
+  const initFilters = useMemo(readFiltersFromUrl, []);
+  const [activeTypes, setActiveTypes] = useState<string[] | null>(initFilters.activeTypes);
+  const [activeContainers, setActiveContainers] = useState<string[] | null>(initFilters.activeContainers);
+  const [pharmaOnly, setPharmaOnly] = useState(initFilters.pharmaOnly);
+  const [searchText, setSearchText] = useState(initFilters.searchText);
+  const [dedupEnabled, setDedupEnabled] = useState(initFilters.dedup);
+  const [sortBy, setSortBy] = useState<SortKey | null>(initFilters.sortBy);
+  const [sortDir, setSortDir] = useState<SortDir>(initFilters.sortDir);
+  const [hideTypes, setHideTypes] = useState<string[]>(initFilters.hideTypes);
+  const [groupBy, setGroupBy] = useState<GroupBy>(initFilters.groupBy);
+  const [pageSize, setPageSize] = useState(100);
+  const [currentPage, setCurrentPage] = useState(0);
   const [pagesDrillDown, setPagesDrillDown] = useState(false);
   const [tagDrillDown, setTagDrillDown] = useState(false);
   const [elementsDrillDown, setElementsDrillDown] = useState(false);
   const [classifying, setClassifying] = useState(false);
   const queryClient = useQueryClient();
-  const PAGE_SIZE = 200;
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["scan", scanId, dedupEnabled, hideTypes.join(",")],
@@ -115,6 +167,36 @@ export function ScanDetail({ scanId, onBack }: Props) {
       setClassifying(false);
     }
   }, [scanId]);
+
+  // Live progress polling (separate from the heavy scan detail query)
+  const scanStatus = data?.scan?.scan_status;
+  const isRunningForProgress = scanStatus === "running" || scanStatus === "pending";
+  const { data: progress } = useQuery({
+    queryKey: ["scan-progress", scanId],
+    queryFn: () => getScanProgress(scanId),
+    refetchInterval: isRunningForProgress ? 1500 : false,
+    enabled: isRunningForProgress,
+  });
+
+  // Client-side elapsed timer for smooth second-by-second updates
+  const [elapsed, setElapsed] = useState(0);
+  const mountTimeRef = useRef(Date.now());
+  useEffect(() => {
+    if (!isRunningForProgress) return;
+    mountTimeRef.current = Date.now();
+    const timer = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - mountTimeRef.current) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isRunningForProgress]);
+
+  // Sync filter state to URL params
+  useEffect(() => {
+    syncFiltersToUrl({
+      activeTypes, activeContainers, pharmaOnly, searchText,
+      dedup: dedupEnabled, hideTypes, groupBy, sortBy, sortDir,
+    });
+  }, [activeTypes, activeContainers, pharmaOnly, searchText, dedupEnabled, hideTypes, groupBy, sortBy, sortDir]);
 
   // Fuse.js index for fuzzy search
   const fuse = useMemo(() => {
@@ -206,8 +288,14 @@ export function ScanDetail({ scanId, onBack }: Props) {
 
   // Apply filters
   let filtered = elements;
-  if (typeFilter) filtered = filtered.filter((e) => e.element_type === typeFilter);
-  if (containerFilter) filtered = filtered.filter((e) => e.container_context === containerFilter);
+  if (activeTypes && activeTypes.length > 0) {
+    const typeSet = new Set(activeTypes);
+    filtered = filtered.filter((e) => typeSet.has(e.element_type));
+  }
+  if (activeContainers && activeContainers.length > 0) {
+    const containerSet = new Set(activeContainers);
+    filtered = filtered.filter((e) => containerSet.has(e.container_context));
+  }
   if (pharmaOnly) filtered = filtered.filter((e) => e.pharma_context);
   if (searchText && fuse) {
     const fuseResults = fuse.search(searchText);
@@ -289,29 +377,83 @@ export function ScanDetail({ scanId, onBack }: Props) {
         )}
       </div>
 
-      {/* Progress bar for running scans */}
-      {isRunning && (
-        <div className="mb-6 rounded-xl border bg-card p-6">
-          <div className="flex items-center gap-3 mb-3">
-            <Spinner />
-            <span className="font-medium">Scan in progress...</span>
-          </div>
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Pages Scanned
-              </span>
-              <p className="text-2xl font-bold">{String(scan.pages_scanned || 0)}</p>
+      {/* Live progress card for running scans */}
+      {isRunning && (() => {
+        const pagesScanned = progress?.pages_scanned ?? 0;
+        const elementsFound = progress?.total_elements ?? 0;
+        const maxPages = progress?.config_max_pages ?? (Number(scan.config_max_pages) || 200);
+        const progressPct = Math.min(100, Math.round((pagesScanned / maxPages) * 100));
+        const currentUrl = progress?.current_url;
+        const phase = !progress || progress.status === "pending"
+          ? "Pending"
+          : pagesScanned === 0
+            ? "Starting..."
+            : "Crawling";
+        const displayElapsed = progress?.elapsed_seconds != null
+          ? Math.max(Math.round(progress.elapsed_seconds), elapsed)
+          : elapsed;
+        const mins = Math.floor(displayElapsed / 60);
+        const secs = displayElapsed % 60;
+        const elapsedStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+
+        // Truncate URL to domain + path
+        let shortUrl = "";
+        if (currentUrl) {
+          try {
+            const u = new URL(currentUrl);
+            shortUrl = u.pathname.length > 40
+              ? u.hostname + u.pathname.slice(0, 37) + "..."
+              : u.hostname + u.pathname;
+          } catch { shortUrl = currentUrl.slice(0, 50); }
+        }
+
+        return (
+          <div className="mb-6 rounded-xl border bg-card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <Spinner />
+                <span className="font-medium">{phase}</span>
+              </div>
+              <span className="text-sm tabular-nums text-muted-foreground">{elapsedStr}</span>
             </div>
-            <div>
-              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                Elements Found
-              </span>
-              <p className="text-2xl font-bold">{summary.total_elements}</p>
+
+            {/* Progress bar */}
+            <div className="mb-4 h-2 rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full rounded-full bg-primary transition-all duration-500 ease-out"
+                style={{ width: `${Math.max(progressPct, pagesScanned > 0 ? 2 : 0)}%` }}
+              />
             </div>
+
+            <div className="grid grid-cols-3 gap-4 text-sm">
+              <div>
+                <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Pages Scanned
+                </span>
+                <p className="text-2xl font-bold tabular-nums">{pagesScanned}</p>
+              </div>
+              <div>
+                <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Elements Found
+                </span>
+                <p className="text-2xl font-bold tabular-nums">{elementsFound}</p>
+              </div>
+              <div>
+                <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  Limit
+                </span>
+                <p className="text-2xl font-bold tabular-nums text-muted-foreground">{maxPages}</p>
+              </div>
+            </div>
+
+            {shortUrl && (
+              <p className="mt-3 truncate text-xs text-muted-foreground font-mono">
+                {shortUrl}
+              </p>
+            )}
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Summary metrics */}
       {!isRunning && (
@@ -377,180 +519,143 @@ export function ScanDetail({ scanId, onBack }: Props) {
         </div>
       )}
 
-      {/* Type breakdown chips */}
+      {/* Toolbar: type chips + presets on one row, search/container/view on second row */}
       {!isRunning && summary.total_elements > 0 && (
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          {types.map((type) => (
+        <div className="mb-4 space-y-2">
+          {/* Row 1: Type filter chips + quick presets */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            {types.map((type) => {
+              const isActive = !activeTypes || activeTypes.includes(type);
+              return (
+                <button
+                  key={type}
+                  onClick={() => {
+                    if (!activeTypes) {
+                      setActiveTypes([type]);
+                    } else if (activeTypes.includes(type)) {
+                      const next = activeTypes.filter((t) => t !== type);
+                      setActiveTypes(next.length ? next : null);
+                    } else {
+                      setActiveTypes([...activeTypes, type]);
+                    }
+                    setCurrentPage(0);
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all ${
+                    isActive ? "" : "opacity-30"
+                  } ${TYPE_COLORS[type] || TYPE_COLORS.unknown}`}
+                >
+                  <ElementTypeIcon type={type} />
+                  {type} ({summary.by_type[type]})
+                </button>
+              );
+            })}
+            {summary.pharma_flagged > 0 && (
+              <button
+                onClick={() => { setPharmaOnly(!pharmaOnly); setCurrentPage(0); }}
+                className={`rounded-full px-2.5 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 transition-colors ${
+                  pharmaOnly ? "ring-2 ring-ring ring-offset-1" : ""
+                }`}
+              >
+                {summary.tag_name.toLowerCase()} ({summary.pharma_flagged})
+              </button>
+            )}
+            <span className="mx-1 h-4 w-px bg-border" />
             <button
-              key={type}
-              onClick={() => setTypeFilter(typeFilter === type ? null : type)}
-              className={`rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors ${
-                typeFilter === type
-                  ? "ring-2 ring-ring ring-offset-1"
-                  : ""
-              } ${TYPE_COLORS[type] || TYPE_COLORS.unknown}`}
-            >
-              {type} ({summary.by_type[type]})
-            </button>
-          ))}
-          {summary.pharma_flagged > 0 && (
-            <button
-              onClick={() => setPharmaOnly(!pharmaOnly)}
-              className={`rounded-full px-2.5 py-0.5 text-xs font-medium bg-amber-100 text-amber-700 transition-colors ${
-                pharmaOnly ? "ring-2 ring-ring ring-offset-1" : ""
+              onClick={() => {
+                setDedupEnabled(!dedupEnabled);
+                setActiveContainers(null);
+                setCurrentPage(0);
+              }}
+              className={`rounded-lg border px-2 py-0.5 text-xs font-medium transition-colors ${
+                dedupEnabled ? "bg-primary text-primary-foreground" : "hover:bg-muted"
               }`}
             >
-              {summary.tag_name.toLowerCase()} ({summary.pharma_flagged})
+              Dedup
             </button>
-          )}
-        </div>
-      )}
-
-      {/* Dedup presets */}
-      {!isRunning && summary.total_elements > 0 && (
-        <div className="mb-3 flex gap-1.5">
-          <button
-            onClick={() => {
-              setDedupEnabled(!dedupEnabled);
-              setContainerFilter(null);
-              setShowAll(false);
-            }}
-            className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
-              dedupEnabled && !containerFilter
-                ? "bg-primary text-primary-foreground"
-                : "hover:bg-muted"
-            }`}
-          >
-            Deduplicate
-          </button>
-          <button
-            onClick={() => {
-              setDedupEnabled(true);
-              setContainerFilter(null);
-              setTypeFilter(null);
-              setPharmaOnly(false);
-              setShowAll(false);
-            }}
-            className="rounded-lg border px-2.5 py-1 text-xs font-medium hover:bg-muted"
-          >
-            Dedupe Globals
-          </button>
-          <button
-            onClick={() => {
-              setDedupEnabled(false);
-              setTypeFilter(null);
-              setContainerFilter(null);
-              setPharmaOnly(false);
-              setSearchText("");
-              setShowAll(false);
-              setSortBy(null);
-            }}
-            className="rounded-lg border px-2.5 py-1 text-xs font-medium hover:bg-muted"
-          >
-            Full Detail
-          </button>
-        </div>
-      )}
-
-      {/* Filtering presets */}
-      {!isRunning && summary.total_elements > 0 && (
-        <div className="mb-3 flex flex-wrap gap-1.5">
-          <span className="text-xs text-muted-foreground self-center mr-1">Filter:</span>
-          <button
-            onClick={() => setHideTypes(hideTypes.includes("link") ? [] : ["link"])}
-            className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
-              hideTypes.includes("link") ? "bg-primary text-primary-foreground" : "hover:bg-muted"
-            }`}
-          >
-            Hide Nav Links
-          </button>
-          <button
-            onClick={() => {
-              const contentTypes = ["link", "menu", "tab"];
-              const isActive = contentTypes.every((t) => hideTypes.includes(t));
-              setHideTypes(isActive ? [] : contentTypes);
-            }}
-            className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
-              ["link", "menu", "tab"].every((t) => hideTypes.includes(t))
-                ? "bg-primary text-primary-foreground"
-                : "hover:bg-muted"
-            }`}
-          >
-            Content Only
-          </button>
-          <button
-            onClick={() => {
-              const isActive = dedupEnabled && hideTypes.length > 0 && containerFilter !== null;
-              if (isActive) {
-                setDedupEnabled(false);
-                setHideTypes([]);
-                setContainerFilter(null);
-              } else {
-                setDedupEnabled(true);
-                setHideTypes(["link"]);
-                setContainerFilter("main");
-                setShowAll(false);
-              }
-            }}
-            className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
-              dedupEnabled && hideTypes.includes("link") && containerFilter === "main"
-                ? "bg-primary text-primary-foreground"
-                : "hover:bg-muted"
-            }`}
-          >
-            Smart Globals
-          </button>
-          {hideTypes.length > 0 && (
             <button
-              onClick={() => setHideTypes([])}
-              className="rounded-lg border px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted"
+              onClick={() => setHideTypes(hideTypes.includes("link") ? [] : ["link"])}
+              className={`rounded-lg border px-2 py-0.5 text-xs font-medium transition-colors ${
+                hideTypes.includes("link") ? "bg-primary text-primary-foreground" : "hover:bg-muted"
+              }`}
             >
-              Clear filters
+              Hide Links
             </button>
-          )}
+            <button
+              onClick={() => {
+                setDedupEnabled(false);
+                setActiveTypes(null);
+                setActiveContainers(null);
+                setPharmaOnly(false);
+                setSearchText("");
+                setHideTypes([]);
+                setCurrentPage(0);
+                setSortBy(null);
+                setGroupBy("flat");
+              }}
+              className="rounded-lg border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted"
+            >
+              Reset
+            </button>
+          </div>
+
+          {/* Row 2: Search + container select + group-by toggle */}
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={searchText}
+              onChange={(e) => { setSearchText(e.target.value); setCurrentPage(0); }}
+              placeholder="Search elements..."
+              className="flex-1 rounded-lg border bg-background px-3 py-1.5 text-[13px] outline-none ring-ring focus:ring-2"
+            />
+            <select
+              value={activeContainers?.[0] ?? ""}
+              onChange={(e) => {
+                setActiveContainers(e.target.value ? [e.target.value] : null);
+                setCurrentPage(0);
+              }}
+              className="rounded-lg border bg-background px-3 py-1.5 text-[13px] outline-none ring-ring focus:ring-2"
+            >
+              <option value="">All containers</option>
+              {containers.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+            <div className="flex rounded-lg border overflow-hidden">
+              {(["flat", "page", "type"] as GroupBy[]).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setGroupBy(mode)}
+                  className={`px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                    groupBy === mode ? "bg-primary text-primary-foreground" : "hover:bg-muted"
+                  }`}
+                >
+                  {mode === "flat" ? "Table" : mode === "page" ? "By Page" : "By Type"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Results count */}
+          <p className="text-xs text-muted-foreground">
+            Showing {filtered.length} of {elements.length} elements
+            {dedupEnabled && " (deduplicated)"}
+          </p>
         </div>
       )}
 
-      {/* Filters row */}
-      {!isRunning && summary.total_elements > 0 && (
-        <div className="mb-3 flex gap-2">
-          <input
-            type="text"
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            placeholder="Search elements..."
-            className="flex-1 rounded-lg border bg-background px-3 py-1.5 text-[13px] outline-none ring-ring focus:ring-2"
-          />
-          <select
-            value={containerFilter || ""}
-            onChange={(e) => setContainerFilter(e.target.value || null)}
-            className="rounded-lg border bg-background px-3 py-1.5 text-[13px] outline-none ring-ring focus:ring-2"
-          >
-            <option value="">All containers</option>
-            {containers.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
-        </div>
-      )}
+      {/* Element display: flat table or grouped views */}
+      {!isRunning && filtered.length > 0 && groupBy === "flat" && (() => {
+        const totalPages = pageSize === 0 ? 1 : Math.ceil(filtered.length / pageSize);
+        const safePage = Math.min(currentPage, totalPages - 1);
+        const paginatedElements = pageSize === 0
+          ? filtered
+          : filtered.slice(safePage * pageSize, (safePage + 1) * pageSize);
 
-      {/* Results count */}
-      {!isRunning && summary.total_elements > 0 && (
-        <p className="mb-2 text-xs text-muted-foreground">
-          Showing {filtered.length} of {elements.length} elements
-          {dedupEnabled && " (deduplicated)"}
-        </p>
-      )}
-
-      {/* Element table */}
-      {!isRunning && filtered.length > 0 && (() => {
-        const displayElements = showAll ? filtered : filtered.slice(0, PAGE_SIZE);
-        const hasMore = filtered.length > PAGE_SIZE;
         return (
           <>
             <div className="overflow-x-auto rounded-xl border bg-card">
               <table className="w-full text-[13px]">
-                <thead>
+                <thead className="sticky top-0 z-10 bg-card">
                   <tr className="border-b text-left text-xs uppercase tracking-wider text-muted-foreground">
                     <th className="px-3 py-2 cursor-pointer select-none" onClick={() => handleSort("element_type")}>
                       Type<SortArrow col="element_type" />
@@ -558,8 +663,8 @@ export function ScanDetail({ scanId, onBack }: Props) {
                     <th className="px-3 py-2 cursor-pointer select-none" onClick={() => handleSort("element_text")}>
                       Element Text<SortArrow col="element_text" />
                     </th>
-                    <th className="px-3 py-2 cursor-pointer select-none" onClick={() => handleSort("container_context")}>
-                      Container<SortArrow col="container_context" />
+                    <th className="px-3 py-2 cursor-pointer select-none" onClick={() => handleSort("action_type")}>
+                      Action<SortArrow col="action_type" />
                     </th>
                     <th className="px-3 py-2 cursor-pointer select-none" onClick={() => handleSort("section_context")}>
                       Section<SortArrow col="section_context" />
@@ -576,23 +681,64 @@ export function ScanDetail({ scanId, onBack }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {displayElements.map((el, i) => (
-                    <ElementRow key={i} element={el} showTier={hasAnyTier} scanId={scanId} />
+                  {paginatedElements.map((el, i) => (
+                    <ElementRow key={el.id ?? i} element={el} showTier={hasAnyTier} scanId={scanId} />
                   ))}
                 </tbody>
               </table>
             </div>
-            {hasMore && !showAll && (
-              <button
-                onClick={() => setShowAll(true)}
-                className="mt-2 w-full rounded-lg border px-4 py-1.5 text-[13px] text-muted-foreground hover:bg-muted"
-              >
-                Show all {filtered.length} elements ({filtered.length - PAGE_SIZE} more)
-              </button>
-            )}
+
+            {/* Pagination bar */}
+            <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <span>Rows per page:</span>
+                {[50, 100, 200, 0].map((size) => (
+                  <button
+                    key={size}
+                    onClick={() => { setPageSize(size); setCurrentPage(0); }}
+                    className={`rounded px-2 py-0.5 transition-colors ${
+                      pageSize === size ? "bg-primary text-primary-foreground" : "hover:bg-muted"
+                    }`}
+                  >
+                    {size === 0 ? "All" : size}
+                  </button>
+                ))}
+              </div>
+              {pageSize > 0 && totalPages > 1 && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setCurrentPage(Math.max(0, safePage - 1))}
+                    disabled={safePage === 0}
+                    className="rounded px-2 py-0.5 hover:bg-muted disabled:opacity-30"
+                  >
+                    &larr; Prev
+                  </button>
+                  <span className="tabular-nums">
+                    {safePage + 1} / {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(Math.min(totalPages - 1, safePage + 1))}
+                    disabled={safePage >= totalPages - 1}
+                    className="rounded px-2 py-0.5 hover:bg-muted disabled:opacity-30"
+                  >
+                    Next &rarr;
+                  </button>
+                </div>
+              )}
+            </div>
           </>
         );
       })()}
+
+      {/* Group by Page */}
+      {!isRunning && filtered.length > 0 && groupBy === "page" && (
+        <GroupByPageView elements={filtered} hasAnyTier={hasAnyTier} scanId={scanId} />
+      )}
+
+      {/* Group by Type */}
+      {!isRunning && filtered.length > 0 && groupBy === "type" && (
+        <GroupByTypeView elements={filtered} hasAnyTier={hasAnyTier} scanId={scanId} />
+      )}
 
       {/* Scan info footer */}
       {!isRunning && (
@@ -723,6 +869,110 @@ export function ScanDetail({ scanId, onBack }: Props) {
   );
 }
 
+function GroupByPageView({ elements, hasAnyTier, scanId }: { elements: ScanElement[]; hasAnyTier: boolean; scanId: string }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, { title: string | null; elements: ScanElement[] }>();
+    for (const el of elements) {
+      if (!map.has(el.page_url)) map.set(el.page_url, { title: el.page_title, elements: [] });
+      map.get(el.page_url)!.elements.push(el);
+    }
+    return [...map.entries()].sort((a, b) => b[1].elements.length - a[1].elements.length);
+  }, [elements]);
+
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggle = (url: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(url) ? next.delete(url) : next.add(url);
+      return next;
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      {groups.map(([url, { title, elements: els }]) => (
+        <div key={url} className="rounded-xl border bg-card overflow-hidden">
+          <button
+            onClick={() => toggle(url)}
+            className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-muted/50 transition-colors text-left"
+          >
+            <div className="min-w-0 flex-1">
+              <span className="text-[13px] font-medium">{toRelativePath(url)}</span>
+              {title && <span className="ml-2 text-xs text-muted-foreground">{title}</span>}
+            </div>
+            <span className="ml-2 shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs font-medium tabular-nums">
+              {els.length}
+            </span>
+          </button>
+          {!collapsed.has(url) && (
+            <div className="border-t">
+              <table className="w-full text-[13px]">
+                <tbody>
+                  {els.map((el, i) => (
+                    <ElementRow key={i} element={el} showTier={hasAnyTier} scanId={scanId} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GroupByTypeView({ elements, hasAnyTier, scanId }: { elements: ScanElement[]; hasAnyTier: boolean; scanId: string }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, ScanElement[]>();
+    for (const el of elements) {
+      const t = el.element_type || "unknown";
+      if (!map.has(t)) map.set(t, []);
+      map.get(t)!.push(el);
+    }
+    return [...map.entries()].sort((a, b) => b[1].length - a[1].length);
+  }, [elements]);
+
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const toggle = (type: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(type) ? next.delete(type) : next.add(type);
+      return next;
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      {groups.map(([type, els]) => (
+        <div key={type} className="rounded-xl border bg-card overflow-hidden">
+          <button
+            onClick={() => toggle(type)}
+            className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-muted/50 transition-colors text-left"
+          >
+            <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${TYPE_COLORS[type] || TYPE_COLORS.unknown}`}>
+              {type}
+            </span>
+            <span className="ml-2 shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs font-medium tabular-nums">
+              {els.length}
+            </span>
+          </button>
+          {!collapsed.has(type) && (
+            <div className="border-t">
+              <table className="w-full text-[13px]">
+                <tbody>
+                  {els.map((el, i) => (
+                    <ElementRow key={i} element={el} showTier={hasAnyTier} scanId={scanId} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ElementRow({ element: el, showTier, scanId }: { element: ScanElement; showTier: boolean; scanId: string }) {
   const [expanded, setExpanded] = useState(false);
   const queryClient = useQueryClient();
@@ -752,10 +1002,11 @@ function ElementRow({ element: el, showTier, scanId }: { element: ScanElement; s
       >
         <td className="px-3 py-2">
           <span
-            className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
               TYPE_COLORS[el.element_type] || TYPE_COLORS.unknown
             }`}
           >
+            <ElementTypeIcon type={el.element_type} />
             {el.element_type}
           </span>
         </td>
@@ -767,7 +1018,7 @@ function ElementRow({ element: el, showTier, scanId }: { element: ScanElement; s
             </span>
           )}
         </td>
-        <td className="px-3 py-2 text-muted-foreground">{el.container_context}</td>
+        <td className="px-3 py-2 text-muted-foreground">{el.action_type || "\u2014"}</td>
         <td className="px-3 py-2 max-w-[200px] truncate text-muted-foreground">
           {el.section_context || "\u2014"}
         </td>
@@ -890,6 +1141,29 @@ function MetricCard({
   accent?: boolean;
   onClick?: () => void;
 }) {
+  // Count-up animation for numeric values
+  const numericValue = parseInt(value, 10);
+  const isNumeric = !isNaN(numericValue) && String(numericValue) === value;
+  const [displayVal, setDisplayVal] = useState(0);
+  const hasAnimated = useRef(false);
+
+  useEffect(() => {
+    if (!isNumeric || hasAnimated.current || numericValue === 0) {
+      setDisplayVal(numericValue);
+      return;
+    }
+    hasAnimated.current = true;
+    const duration = 600;
+    const start = performance.now();
+    const step = (now: number) => {
+      const progress = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+      setDisplayVal(Math.round(eased * numericValue));
+      if (progress < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }, [numericValue, isNumeric]);
+
   return (
     <div
       className={`rounded-xl border bg-card p-3 ${onClick ? "cursor-pointer hover:border-primary/40 transition-colors" : ""}`}
@@ -898,8 +1172,8 @@ function MetricCard({
       <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {label}
       </span>
-      <p className={`text-2xl font-bold ${accent ? "text-amber-600" : ""}`}>
-        {value}
+      <p className={`text-2xl font-bold tabular-nums ${accent ? "text-amber-600" : ""}`}>
+        {isNumeric ? displayVal : value}
       </p>
     </div>
   );
