@@ -15,7 +15,7 @@ import aiosqlite
 from db.database import get_db
 from auth.security import get_current_user
 from crawler.models import ScanConfig
-from crawler.engine import CrawlEngine
+from crawler.engine import CrawlEngine, get_scan_progress
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ async def _run_scan(scan_id: str, config: ScanConfig, username: str):
     start = time.time()
 
     db_path = __import__("config").settings.database_url
+    engine._db_path = db_path  # Enable periodic progress flushing
     import aiosqlite as _aiosqlite
 
     async with _aiosqlite.connect(db_path) as db:
@@ -370,6 +371,50 @@ async def diff_scans(
             "removed_count": len(removed),
             "unchanged_count": len(unchanged),
         },
+    }
+
+
+@router.get("/{scan_id}/progress")
+async def get_scan_progress_endpoint(
+    scan_id: str,
+    user: dict = Depends(get_current_user),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Return live crawl progress. Uses in-memory data if scan is active,
+    falls back to DB values for finished scans."""
+    # Verify user owns the scan
+    cursor = await db.execute(
+        "SELECT scan_id, scan_status, pages_scanned, config_max_pages FROM scans WHERE scan_id = ? AND created_by = ?",
+        (scan_id, user["username"]),
+    )
+    scan = await cursor.fetchone()
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    scan_dict = dict(scan)
+
+    # Try in-memory progress first (scan is still running)
+    live = get_scan_progress(scan_id)
+    if live:
+        return {
+            "pages_scanned": live.pages_scanned,
+            "total_pages_found": live.total_pages_found,
+            "total_elements": live.total_elements,
+            "current_url": live.current_url,
+            "status": live.status,
+            "elapsed_seconds": live.elapsed_seconds,
+            "config_max_pages": scan_dict["config_max_pages"],
+        }
+
+    # Fallback to DB values (scan finished or server restarted)
+    return {
+        "pages_scanned": scan_dict["pages_scanned"] or 0,
+        "total_pages_found": scan_dict["pages_scanned"] or 0,
+        "total_elements": 0,
+        "current_url": None,
+        "status": scan_dict["scan_status"],
+        "elapsed_seconds": None,
+        "config_max_pages": scan_dict["config_max_pages"],
     }
 
 

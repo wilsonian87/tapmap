@@ -14,6 +14,15 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
+# Module-level registry: live progress for in-flight scans, keyed by scan_id.
+# Entries are added when crawl() starts and removed when it finishes.
+_active_scans: dict[str, "CrawlProgress"] = {}
+
+
+def get_scan_progress(scan_id: str) -> CrawlProgress | None:
+    """Return live progress for a running scan, or None if not in memory."""
+    return _active_scans.get(scan_id)
+
 
 class CrawlEngine:
     """Crawl engine: discovers pages and extracts interactive elements.
@@ -32,6 +41,8 @@ class CrawlEngine:
         self.progress = CrawlProgress(scan_id="", status="running")
         self.consent_result: ConsentResult | None = None
         self.total_elements: int = 0
+        self._start_time: float = 0.0
+        self._db_path: str | None = None
 
     def _normalize_url(self, url: str) -> str:
         """Normalize URL: remove fragment, strip trailing slash."""
@@ -85,7 +96,9 @@ class CrawlEngine:
     async def crawl(self, scan_id: str) -> list[PageResult]:
         """Execute the crawl. Returns list of discovered pages with elements."""
         self.progress.scan_id = scan_id
-        start_time = time.time()
+        self._start_time = time.time()
+        _active_scans[scan_id] = self.progress
+        start_time = self._start_time
 
         # Check robots.txt first
         robots = await check_robots_txt(self.config.url)
@@ -133,6 +146,9 @@ class CrawlEngine:
         if self.progress.status == "running":
             self.progress.status = "completed"
 
+        # Remove from active registry
+        _active_scans.pop(scan_id, None)
+
         return self.pages
 
     async def _crawl_loop(self, context, robots):
@@ -169,6 +185,12 @@ class CrawlEngine:
             self.total_elements += len(result.elements)
             self.progress.pages_scanned = len(self.pages)
             self.progress.total_pages_found = len(self.visited) + self.queue.qsize()
+            self.progress.total_elements = self.total_elements
+            self.progress.elapsed_seconds = round(time.time() - self._start_time, 1)
+
+            # Flush pages_scanned to DB every 5 pages for live progress
+            if self._db_path and len(self.pages) % 5 == 0:
+                await self._flush_progress_to_db()
 
             # Mark consent as handled after first page
             if not consent_handled:
@@ -186,6 +208,21 @@ class CrawlEngine:
 
             # Rate limiting
             await asyncio.sleep(delay)
+
+    async def _flush_progress_to_db(self):
+        """Write current pages_scanned to DB for progress polling fallback."""
+        if not self._db_path:
+            return
+        try:
+            import aiosqlite
+            async with aiosqlite.connect(self._db_path) as db:
+                await db.execute(
+                    "UPDATE scans SET pages_scanned = ? WHERE scan_id = ?",
+                    (self.progress.pages_scanned, self.progress.scan_id),
+                )
+                await db.commit()
+        except Exception as e:
+            logger.debug("Progress DB flush failed: %s", e)
 
     async def _visit_page(
         self, context, url: str, depth: int,
