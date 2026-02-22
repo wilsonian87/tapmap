@@ -72,6 +72,8 @@ function readFiltersFromUrl() {
     searchText: p.get("q") ?? "",
     dedup: p.get("dedup") === "1",
     hideTypes: p.get("hide")?.split(",").filter(Boolean) ?? [],
+    excludeTypes: p.get("xtype")?.split(",").filter(Boolean) ?? [],
+    excludeActions: p.get("xaction")?.split(",").filter(Boolean) ?? [],
     groupBy: (p.get("group") as GroupBy) || "flat",
     sortBy: (p.get("sort") as SortKey) || null,
     sortDir: (p.get("dir") as SortDir) || "asc",
@@ -86,12 +88,13 @@ function syncFiltersToUrl(state: {
   searchText: string;
   dedup: boolean;
   hideTypes: string[];
+  excludeTypes: string[];
+  excludeActions: string[];
   groupBy: GroupBy;
   sortBy: SortKey | null;
   sortDir: SortDir;
 }) {
   const p = new URLSearchParams(window.location.search);
-  // Preserve scanId param if present
   const setOrDel = (key: string, val: string | null) => {
     if (val) p.set(key, val); else p.delete(key);
   };
@@ -101,6 +104,8 @@ function syncFiltersToUrl(state: {
   setOrDel("q", state.searchText || null);
   setOrDel("dedup", state.dedup ? "1" : null);
   setOrDel("hide", state.hideTypes.length ? state.hideTypes.join(",") : null);
+  setOrDel("xtype", state.excludeTypes.length ? state.excludeTypes.join(",") : null);
+  setOrDel("xaction", state.excludeActions.length ? state.excludeActions.join(",") : null);
   setOrDel("group", state.groupBy !== "flat" ? state.groupBy : null);
   setOrDel("sort", state.sortBy || null);
   setOrDel("dir", state.sortDir !== "asc" ? state.sortDir : null);
@@ -120,6 +125,8 @@ export function ScanDetail({ scanId, onBack }: Props) {
   const [sortBy, setSortBy] = useState<SortKey | null>(initFilters.sortBy);
   const [sortDir, setSortDir] = useState<SortDir>(initFilters.sortDir);
   const [hideTypes, setHideTypes] = useState<string[]>(initFilters.hideTypes);
+  const [excludeTypes, setExcludeTypes] = useState<string[]>(initFilters.excludeTypes);
+  const [excludeActions, setExcludeActions] = useState<string[]>(initFilters.excludeActions);
   const [groupBy, setGroupBy] = useState<GroupBy>(initFilters.groupBy);
   const [pageSize, setPageSize] = useState(100);
   const [currentPage, setCurrentPage] = useState(0);
@@ -194,9 +201,9 @@ export function ScanDetail({ scanId, onBack }: Props) {
   useEffect(() => {
     syncFiltersToUrl({
       activeTypes, activeContainers, pharmaOnly, searchText,
-      dedup: dedupEnabled, hideTypes, groupBy, sortBy, sortDir,
+      dedup: dedupEnabled, hideTypes, excludeTypes, excludeActions, groupBy, sortBy, sortDir,
     });
-  }, [activeTypes, activeContainers, pharmaOnly, searchText, dedupEnabled, hideTypes, groupBy, sortBy, sortDir]);
+  }, [activeTypes, activeContainers, pharmaOnly, searchText, dedupEnabled, hideTypes, excludeTypes, excludeActions, groupBy, sortBy, sortDir]);
 
   // Fuse.js index for fuzzy search
   const fuse = useMemo(() => {
@@ -296,6 +303,14 @@ export function ScanDetail({ scanId, onBack }: Props) {
     const containerSet = new Set(activeContainers);
     filtered = filtered.filter((e) => containerSet.has(e.container_context));
   }
+  if (excludeTypes.length > 0) {
+    const exSet = new Set(excludeTypes);
+    filtered = filtered.filter((e) => !exSet.has(e.element_type));
+  }
+  if (excludeActions.length > 0) {
+    const exSet = new Set(excludeActions);
+    filtered = filtered.filter((e) => !exSet.has(e.action_type || ""));
+  }
   if (pharmaOnly) filtered = filtered.filter((e) => e.pharma_context);
   if (searchText && fuse) {
     const fuseResults = fuse.search(searchText);
@@ -315,7 +330,7 @@ export function ScanDetail({ scanId, onBack }: Props) {
 
   // Get unique values for filters
   const types = Object.keys(summary.by_type);
-  const containers = [...new Set(elements.map((e) => e.container_context))].sort();
+  const actionTypes = [...new Set(elements.map((e) => e.action_type).filter(Boolean))].sort() as string[];
 
   const handleSort = (key: SortKey) => {
     if (sortBy === key) {
@@ -588,6 +603,8 @@ export function ScanDetail({ scanId, onBack }: Props) {
                 setPharmaOnly(false);
                 setSearchText("");
                 setHideTypes([]);
+                setExcludeTypes([]);
+                setExcludeActions([]);
                 setCurrentPage(0);
                 setSortBy(null);
                 setGroupBy("flat");
@@ -598,7 +615,7 @@ export function ScanDetail({ scanId, onBack }: Props) {
             </button>
           </div>
 
-          {/* Row 2: Search + container select + group-by toggle */}
+          {/* Row 2: Search + exclude filters + group-by toggle */}
           <div className="flex gap-2">
             <input
               type="text"
@@ -607,19 +624,18 @@ export function ScanDetail({ scanId, onBack }: Props) {
               placeholder="Search elements..."
               className="flex-1 rounded-lg border bg-background px-3 py-1.5 text-[13px] outline-none ring-ring focus:ring-2"
             />
-            <select
-              value={activeContainers?.[0] ?? ""}
-              onChange={(e) => {
-                setActiveContainers(e.target.value ? [e.target.value] : null);
-                setCurrentPage(0);
-              }}
-              className="rounded-lg border bg-background px-3 py-1.5 text-[13px] outline-none ring-ring focus:ring-2"
-            >
-              <option value="">All containers</option>
-              {containers.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+            <ExcludeMultiSelect
+              label="Exclude Type"
+              options={types}
+              selected={excludeTypes}
+              onChange={(v) => { setExcludeTypes(v); setCurrentPage(0); }}
+            />
+            <ExcludeMultiSelect
+              label="Exclude Action"
+              options={actionTypes}
+              selected={excludeActions}
+              onChange={(v) => { setExcludeActions(v); setCurrentPage(0); }}
+            />
             <div className="flex rounded-lg border overflow-hidden">
               {(["flat", "page", "type"] as GroupBy[]).map((mode) => (
                 <button
@@ -869,6 +885,74 @@ export function ScanDetail({ scanId, onBack }: Props) {
   );
 }
 
+function ExcludeMultiSelect({
+  label,
+  options,
+  selected,
+  onChange,
+}: {
+  label: string;
+  options: string[];
+  selected: string[];
+  onChange: (val: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className={`rounded-lg border px-3 py-1.5 text-[13px] whitespace-nowrap transition-colors ${
+          selected.length > 0 ? "bg-red-50 border-red-200 text-red-700" : "bg-background hover:bg-muted"
+        }`}
+      >
+        {selected.length > 0 ? `${label} (${selected.length})` : label}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-20 rounded-lg border bg-card shadow-lg p-1.5 min-w-[150px]">
+          {options.map((opt) => (
+            <label
+              key={opt}
+              className="flex items-center gap-2 rounded px-2 py-1 text-[13px] hover:bg-muted cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={selected.includes(opt)}
+                onChange={() => {
+                  onChange(
+                    selected.includes(opt)
+                      ? selected.filter((s) => s !== opt)
+                      : [...selected, opt]
+                  );
+                }}
+                className="rounded"
+              />
+              {opt}
+            </label>
+          ))}
+          {selected.length > 0 && (
+            <button
+              onClick={() => onChange([])}
+              className="mt-1 w-full rounded px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted text-center"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GroupByPageView({ elements, hasAnyTier, scanId }: { elements: ScanElement[]; hasAnyTier: boolean; scanId: string }) {
   const groups = useMemo(() => {
     const map = new Map<string, { title: string | null; elements: ScanElement[] }>();
@@ -1022,8 +1106,8 @@ function ElementRow({ element: el, showTier, scanId }: { element: ScanElement; s
         <td className="px-3 py-2 max-w-[200px] truncate text-muted-foreground">
           {el.section_context || "\u2014"}
         </td>
-        <td className="px-3 py-2 max-w-[200px] truncate text-muted-foreground" title={el.page_url}>
-          {el.page_title || toRelativePath(el.page_url)}
+        <td className="px-3 py-2 max-w-[200px] truncate text-muted-foreground" title={el.page_title || el.page_url}>
+          {toRelativePath(el.page_url)}
         </td>
         <td className="px-3 py-2">
           {el.pharma_context && (() => {
